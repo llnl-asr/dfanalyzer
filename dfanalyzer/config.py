@@ -6,7 +6,7 @@ from hydra.conf import HelpConf, JobConf
 from omegaconf import MISSING
 from typing import Any, Dict, List, Optional
 
-from .constants import COL_TIME_RANGE, VIEW_TYPES
+from .constants import COL_TIME_RANGE, VIEW_TYPES, AIDFTracer
 from .types import ViewMetricBoundaries
 from .utils.env_utils import get_bool_env_var
 
@@ -23,6 +23,8 @@ DERIVED_POSIX_METRICS = {
     'stat': 'io_cat == 3 and func_name.str.contains("stat")',
     'other': 'io_cat == 6',
     'sync': 'io_cat == 7',
+    'nondata': 'io_cat != 1 and io_cat != 2',
+    'all': 'io_cat == 1 or io_cat == 2 or io_cat == 3 or io_cat == 6 or io_cat == 7',
 }
 HASH_CHECKPOINT_NAMES = get_bool_env_var("DFANALYZER_HASH_CHECKPOINT_NAMES", False)
 
@@ -131,8 +133,6 @@ class AnalyzerPresetConfigDLIO(AnalyzerPresetConfig):
             'checkpoint_posix_lustre': 'cat.str.contains("posix|stdio") & cat.str.contains("_checkpoint_lustre")',
             'checkpoint_posix_ssd': 'cat.str.contains("posix|stdio") & cat.str.contains("_checkpoint_ssd")',
             'other_posix': 'cat.isin(["posix", "stdio"])',
-            # 'other_posix_lustre': 'cat.isin(["posix_lustre", "stdio_lustre"])',
-            # 'other_posix_ssd': 'cat.isin(["posix_ssd", "stdio_ssd"])',
         }
     )
     layer_deps: Optional[Dict[str, Optional[str]]] = dc.field(
@@ -189,6 +189,127 @@ class AnalyzerPresetConfigDLIO(AnalyzerPresetConfig):
 
 
 @dc.dataclass
+class AnalyzerPresetConfigAIDFtracer(AnalyzerPresetConfig):
+    additional_metrics: Optional[Dict[str, Optional[str]]] = dc.field(
+        default_factory=lambda: {
+            'compute_util': 'compute_{time_metric}.fillna(0).astype("float")  / (epoch_{time_metric}.astype("float") + {epsilon})',
+            'data_loader_fetch_util': 'data_loader_fetch_{time_metric}.fillna(0).astype("float")  / (epoch_{time_metric}.astype("float") + {epsilon})',
+            'checkpoint_util': 'checkpoint_{time_metric}.fillna(0).astype("float")  / (epoch_{time_metric}.astype("float") + {epsilon})',
+        }
+    )
+    derived_metrics: Optional[Dict[str, Dict[str, str]]] = dc.field(
+        default_factory=lambda: {
+            'app': {},
+            'training': {},
+            'epoch': {},
+            'comm': {
+                "send": f'func_name == "{AIDFTracer.Communication.SEND}"',
+                "receive": f'func_name == "{AIDFTracer.Communication.RECEIVE}"',
+                "barrier": f'func_name == "{AIDFTracer.Communication.BARRIER}"',
+                "bcast": f'func_name == "{AIDFTracer.Communication.BCAST}"',
+                "reduce": f'func_name == "{AIDFTracer.Communication.REDUCE}"',
+                "all_reduce": f'func_name == "{AIDFTracer.Communication.ALL_REDUCE}"',
+                "gather": f'func_name == "{AIDFTracer.Communication.GATHER}"',
+                "all_gather": f'func_name == "{AIDFTracer.Communication.ALL_GATHER}"',
+                "scatter": f'func_name == "{AIDFTracer.Communication.SCATTER}"',
+                "reduce_scatter": f'func_name == "{AIDFTracer.Communication.REDUCE_SCATTER}"',
+                "all_to_all": f'func_name == "{AIDFTracer.Communication.ALL_TO_ALL}"',
+            },
+            'device': {
+                'transfer': f'func_name == "{AIDFTracer.Device.TRANSFER}"',
+            },
+            'compute': {
+                'step': f'func_name == "{AIDFTracer.Compute.STEP}" | func_name == "{AIDFTracer.Category.COMPUTE}"',
+                'forward': f'func_name == "{AIDFTracer.Compute.FORWARD}"',
+                'backward': f'func_name == "{AIDFTracer.Compute.BACKWARD}"',
+            },
+            'data_loader': {
+                'init': f'func_name == "{AIDFTracer.get_init(AIDFTracer.Category.DATALOADER)}"',
+                'fetch': f'func_name == "{AIDFTracer.get_iter(AIDFTracer.DataLoader.FETCH)}"',
+            },
+            'data_loader_worker': {
+                'fork': 'func_name == "fork"',
+                'spawn': 'func_name == "spawn"',
+            },
+            'data': {
+                'init': f'func_name == "{AIDFTracer.get_init(AIDFTracer.Category.DATA)}"',
+                'item': f'func_name == "{AIDFTracer.Data.ITEM}"',
+                'preprocess': f'func_name == "{AIDFTracer.Data.PREPROCESS}"',
+            },
+            'data_posix': DERIVED_POSIX_METRICS,
+            'checkpoint': {
+                "capture": f'func_name == "{AIDFTracer.Checkpoint.CAPTURE}"',
+                "restart": f'func_name == "{AIDFTracer.Checkpoint.RESTART}"',
+            },
+            'checkpoint_posix': DERIVED_POSIX_METRICS,
+            'posix': DERIVED_POSIX_METRICS,
+        }
+    )
+    layer_defs: Dict[str, Optional[str]] = dc.field(
+        default_factory=lambda: {
+            'app': f'cat == "{AIDFTracer.ROOT_CAT}" & func_name == "{AIDFTracer.ROOT_NAME}"',
+            'training': f'cat == "{AIDFTracer.Category.PIPELINE}" & func_name == "{AIDFTracer.Pipeline.TRAIN}"',
+            'epoch': AIDFTracer.get_epoch_query(),
+            'device': f'cat == "{AIDFTracer.Category.DEVICE}"',
+            'compute': f'cat == "{AIDFTracer.Category.COMPUTE}"',
+            'data_loader': f'cat == "{AIDFTracer.Category.DATALOADER}"',
+            'comm': f'cat == "{AIDFTracer.Category.COMM}"',
+            'data_loader_worker': 'cat == "posix" & func_name.isin(["fork", "spawn"])',
+            'data': f'cat == "{AIDFTracer.Category.DATA}"',
+            'data_posix': 'cat.str.contains("posix|stdio") & cat.str.contains("_reader")',
+            'checkpoint': f'cat == "{AIDFTracer.Category.CHECKPOINT}"',
+            'checkpoint_posix': 'cat.str.contains("posix|stdio") & cat.str.contains("_checkpoint")',
+            'posix': 'cat.str.contains("posix|stdio")',
+        }
+    )
+    layer_deps: Optional[Dict[str, Optional[str]]] = dc.field(
+        default_factory=lambda: {
+            'app': None,
+            'training': 'app',
+            'epoch': 'training',
+            'comm': 'epoch',
+            'device': 'epoch',
+            'compute': 'epoch',
+            'data_loader': 'epoch',
+            'data_loader_worker': 'data_loader',
+            'data': 'epoch',
+            'data_posix': 'data',
+            'posix_lustre': 'posix',
+            'checkpoint': 'training',
+            'checkpoint_posix': 'checkpoint',
+            'posix': None,
+        }
+    )
+    logical_views: Optional[Dict[str, Dict[str, Optional[str]]]] = dc.field(
+        default_factory=lambda: {
+            'file_name': {
+                'file_dir': None,
+                'file_pattern': None,
+            },
+            'proc_name': {
+                'host_name': 'proc_name.str.split("#").str[1]',
+                'proc_id': 'proc_name.str.split("#").str[2]',
+                'thread_id': 'proc_name.str.split("#").str[3]',
+            },
+        }
+    )
+    name: str = "ai_dftracer"
+    threaded_layers: Optional[List[str]] = dc.field(
+        default_factory=lambda: [
+            'data_loader',
+            'data_loader_worker',
+            'data',
+            'data_posix',
+        ]
+    )
+    unscored_metrics: Optional[List[str]] = dc.field(
+        default_factory=lambda: [
+            'consumer_rate',
+            'producer_rate',
+        ]
+    )
+
+@dc.dataclass
 class AnalyzerConfig:
     checkpoint: Optional[bool] = True
     checkpoint_dir: Optional[str] = "${hydra:run.dir}/checkpoints"
@@ -211,6 +332,10 @@ class DFTracerAnalyzerConfig(AnalyzerConfig):
     _target_: str = "dfanalyzer.dftracer.DFTracerAnalyzer"
     time_granularity: Optional[float] = 1e6
     time_resolution: Optional[float] = 1e6
+
+@dc.dataclass
+class AIDFTracerAnalyzerConfig(DFTracerAnalyzerConfig):
+    _target_: str = "dfanalyzer.ai_dftracer.AIDFTracerAnalyzer"
 
 
 @dc.dataclass
@@ -389,7 +514,7 @@ class Config:
     logical_view_types: Optional[bool] = False
     metric_boundaries: Optional[ViewMetricBoundaries] = dc.field(default_factory=dict)
     output: OutputConfig = MISSING
-    percentile: Optional[float] = None
+    percentile: Optional[float] = 0.9
     threshold: Optional[int] = None
     time_view_type: Optional[str] = COL_TIME_RANGE
     trace_path: str = MISSING
@@ -406,9 +531,11 @@ def init_hydra_config_store() -> ConfigStore:
     cs.store(name="config", node=Config)
     cs.store(group="analyzer", name="darshan", node=DarshanAnalyzerConfig)
     cs.store(group="analyzer", name="dftracer", node=DFTracerAnalyzerConfig)
+    cs.store(group="analyzer", name="ai_dftracer", node=AIDFTracerAnalyzerConfig)
     cs.store(group="analyzer", name="recorder", node=RecorderAnalyzerConfig)
     cs.store(group="analyzer/preset", name="posix", node=AnalyzerPresetConfigPOSIX)
     cs.store(group="analyzer/preset", name="dlio", node=AnalyzerPresetConfigDLIO)
+    cs.store(group="analyzer/preset", name="ai_dftracer", node=AnalyzerPresetConfigAIDFtracer)
     cs.store(group="cluster", name="external", node=ExternalClusterConfig)
     cs.store(group="cluster", name="local", node=LocalClusterConfig)
     cs.store(group="cluster", name="lsf", node=LSFClusterConfig)

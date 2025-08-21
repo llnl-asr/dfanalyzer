@@ -49,6 +49,8 @@ class DFAnalyzerInstance:
         view_types: Optional[List[ViewType]] = None,
         extra_columns: Optional[Dict[str, str]] = None,
         extra_columns_fn: Optional[Callable[[dict], dict]] = None,
+        trace_path: Optional[str] = None,
+        checkpoint_dir: Optional[str] = None
     ):
         """Analyze the trace using the configured analyzer."""
         return self.analyzer.analyze_trace(
@@ -59,9 +61,10 @@ class DFAnalyzerInstance:
             metric_boundaries=OmegaConf.to_object(self.hydra_config.metric_boundaries),
             percentile=self.hydra_config.percentile if not percentile else percentile,
             time_view_type=self.hydra_config.time_view_type,
-            trace_path=self.hydra_config.trace_path,
+            trace_path=trace_path or self.hydra_config.trace_path,
             unoverlapped_posix_only=self.hydra_config.unoverlapped_posix_only,
             view_types=self.hydra_config.view_types if not view_types else view_types,
+            checkpoint_dir=checkpoint_dir,
         )
 
     def shutdown(self):

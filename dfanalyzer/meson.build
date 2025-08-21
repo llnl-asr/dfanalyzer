@@ -2,6 +2,7 @@ py.install_sources(
     [
         '__init__.py',
         '__main__.py',
+        'ai_dftracer.py',
         'analysis.py',
         'analysis_utils.py',
         'analyzer.py',

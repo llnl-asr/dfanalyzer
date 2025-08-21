@@ -38,21 +38,6 @@ from .types import ViewType
 
 CAT_POSIX = "POSIX"
 CAT_STDIO = "STDIO"
-COND_CHECKPOINT = {
-    "cat": {"checkpoint"},
-    "name": {"TFCheckpointing.checkpoint"},
-}
-COND_COMPUTE = {
-    "cat": {"compute"},
-    "name": {"TFFramework.compute", "compute", "cpu"},
-}
-COND_READ = {
-    "cat": {"IO"},
-    "name": {
-        "TFReader._parse_image",
-        "TorchDataset.__getitem__",
-    },
-}
 IGNORED_FILE_PATTERNS = [
     "/dev/",
     "/etc/",
@@ -325,10 +310,10 @@ def load_objects(
                     final_dict["trange"] = int(((json_dict["ts"] + json_dict["dur"]) / 2.0) / time_granularity)
                 final_dict.update(io_function(json_dict))
                 final_dict.update(extra_columns_fn(json_dict) if extra_columns_fn else {})
-            # check if all extra columns are present
-            if extra_columns and not all(col in final_dict for col in extra_columns):
-                missing_cols = [col for col in extra_columns if col not in final_dict]
-                raise ValueError(f"Missing extra columns: {missing_cols}")
+                # check if all extra columns are present
+                if extra_columns and not all(col in final_dict for col in extra_columns):
+                    missing_cols = [col for col in extra_columns if col not in final_dict]
+                    raise ValueError(f"Missing extra columns: {missing_cols}")
             logging.debug(f"Built a dictionary for line {final_dict}")
             yield final_dict
         except ValueError as error:

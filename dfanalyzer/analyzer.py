@@ -90,8 +90,6 @@ class Analyzer(abc.ABC):
             time_sliced: Whether to slice time ranges for analysis.
             verbose: Whether to enable verbose logging.
         """
-        if checkpoint:
-            assert checkpoint_dir != "", "Checkpoint directory must be defined"
 
         self.additional_metrics = preset.additional_metrics or {}
         self.checkpoint = checkpoint
@@ -125,6 +123,7 @@ class Analyzer(abc.ABC):
         threshold: Optional[int] = None,
         time_view_type: Optional[ViewType] = None,
         unoverlapped_posix_only: Optional[bool] = False,
+        checkpoint_dir: Optional[str] = None
     ) -> AnalyzerResultType:
         """Analyzes I/O trace data to identify performance bottlenecks.
 
@@ -150,6 +149,15 @@ class Analyzer(abc.ABC):
         Raises:
             ValueError: If neither 'percentile' nor 'threshold' is defined.
         """
+        # Check if checkpoint_dir is defined
+        checkpoint_dir = checkpoint_dir or self.checkpoint_dir
+
+        if self.checkpoint:
+            assert checkpoint_dir != "", "Checkpoint directory must be defined"
+
+        if checkpoint_dir and checkpoint_dir != self.checkpoint_dir:
+            ensure_dir(checkpoint_dir)
+
         # Check if both percentile and threshold are none
         if percentile is None and threshold is None:
             raise ValueError("Either percentile or threshold must be defined")
@@ -160,14 +168,14 @@ class Analyzer(abc.ABC):
         hlm_checkpoint_name = self.get_hlm_checkpoint_name(view_types=hlm_view_types)
         traces = None
         raw_stats = None
-        if not self.checkpoint or not self.has_checkpoint(name=hlm_checkpoint_name):
+        if not self.checkpoint or not self.has_checkpoint(name=hlm_checkpoint_name, checkpoint_dir=checkpoint_dir):
             # Read trace & stats
             traces = self.read_trace(
                 trace_path=trace_path,
                 extra_columns=extra_columns,
                 extra_columns_fn=extra_columns_fn,
             )
-            raw_stats = self.read_stats(traces=traces)
+            raw_stats = self.read_stats(traces=traces, checkpoint_dir=checkpoint_dir)
             traces = self.postread_trace(traces=traces, view_types=hlm_view_types).map_partitions(set_size_bins)
             if self.time_sliced:
                 traces = traces.map_partitions(
@@ -180,6 +188,7 @@ class Analyzer(abc.ABC):
             raw_stats = self.restore_extra_data(
                 name=self.get_stats_checkpoint_name(),
                 fallback=lambda: None,
+                checkpoint_dir=checkpoint_dir,
             )
 
         # Compute high-level metrics
@@ -187,6 +196,7 @@ class Analyzer(abc.ABC):
             checkpoint_name=hlm_checkpoint_name,
             traces=traces,
             view_types=hlm_view_types,
+            checkpoint_dir=checkpoint_dir,
         )
         (hlm, raw_stats) = persist(hlm, raw_stats)
         wait([hlm, raw_stats])
@@ -208,6 +218,7 @@ class Analyzer(abc.ABC):
                 layer=layer,
                 hlm=layer_hlm,
                 view_types=view_types,
+                checkpoint_dir=checkpoint_dir,
             )
             layer_main_index = layer_main_view.index.to_frame().reset_index(drop=True)
             layer_views = self.compute_views(
@@ -217,6 +228,7 @@ class Analyzer(abc.ABC):
                 percentile=percentile,
                 threshold=threshold,
                 is_slope_based=is_slope_based,
+                checkpoint_dir=checkpoint_dir,
             )
             if logical_view_types:
                 layer_logical_views = self.compute_logical_views(
@@ -227,6 +239,7 @@ class Analyzer(abc.ABC):
                     percentile=percentile,
                     threshold=threshold,
                     is_slope_based=is_slope_based,
+                    checkpoint_dir=checkpoint_dir,
                 )
                 layer_views.update(layer_logical_views)
             hlms[layer] = layer_hlm
@@ -242,8 +255,8 @@ class Analyzer(abc.ABC):
         if self.checkpoint:
             for view_key in view_keys:
                 flat_view_checkpoint_name = self.get_checkpoint_name(CHECKPOINT_FLAT_VIEW, *list(view_key))
-                flat_view_checkpoint_path = self.get_checkpoint_path(name=flat_view_checkpoint_name)
-                if self.has_checkpoint(name=flat_view_checkpoint_name):
+                flat_view_checkpoint_path = self.get_checkpoint_path(name=flat_view_checkpoint_name, checkpoint_dir=checkpoint_dir)
+                if self.has_checkpoint(name=flat_view_checkpoint_name, checkpoint_dir=checkpoint_dir):
                     checkpointed_flat_views[view_key] = pd.read_parquet(f"{flat_view_checkpoint_path}.parquet")
 
         # Process views to create flat views
@@ -289,7 +302,7 @@ class Analyzer(abc.ABC):
                 if view_key in checkpointed_flat_views:
                     continue
                 flat_view_checkpoint_name = self.get_checkpoint_name(CHECKPOINT_FLAT_VIEW, *list(view_key))
-                flat_view_checkpoint_path = self.get_checkpoint_path(name=flat_view_checkpoint_name)
+                flat_view_checkpoint_path = self.get_checkpoint_path(name=flat_view_checkpoint_name, checkpoint_dir=checkpoint_dir)
                 flat_views[view_key].to_parquet(f"{flat_view_checkpoint_path}.parquet")
 
         return AnalyzerResultType(
@@ -297,7 +310,7 @@ class Analyzer(abc.ABC):
             _main_views=main_views,
             _metric_boundaries=metric_boundaries,
             _traces=traces,
-            checkpoint_dir=self.checkpoint_dir,
+            checkpoint_dir=checkpoint_dir or self.checkpoint_dir,
             flat_views=flat_views,
             layers=self.layers,
             raw_stats=raw_stats,
@@ -305,7 +318,7 @@ class Analyzer(abc.ABC):
             views=views,
         )
 
-    def read_stats(self, traces: dd.DataFrame) -> RawStats:
+    def read_stats(self, traces: dd.DataFrame, checkpoint_dir: Optional[str] = None) -> RawStats:
         """Computes and restores raw statistics from the trace data.
 
         Calculates job time and total event count from the traces.
@@ -330,6 +343,7 @@ class Analyzer(abc.ABC):
                     time_resolution=self.time_resolution,
                     total_count=total_count,
                 ),
+                checkpoint_dir=checkpoint_dir,
             )
         )
         return raw_stats
@@ -402,6 +416,7 @@ class Analyzer(abc.ABC):
         view_types: List[ViewType],
         partition_size: str = PARTITION_SIZE,
         checkpoint_name: Optional[str] = None,
+        checkpoint_dir: Optional[str] = None
     ) -> dd.DataFrame:
         """Computes high-level metrics by aggregating trace data.
 
@@ -424,6 +439,7 @@ class Analyzer(abc.ABC):
                 traces=traces,
                 view_types=view_types,
             ),
+            checkpoint_dir=checkpoint_dir
         )
 
     @event_logger(key=EventType.COMPUTE_MAIN_VIEW, message="Compute main view")
@@ -433,6 +449,7 @@ class Analyzer(abc.ABC):
         hlm: dd.DataFrame,
         view_types: List[ViewType],
         partition_size: str = PARTITION_SIZE,
+        checkpoint_dir: Optional[str] = None
     ) -> dd.DataFrame:
         """Computes the main aggregated view from high-level metrics.
 
@@ -456,6 +473,7 @@ class Analyzer(abc.ABC):
                 partition_size=partition_size,
                 view_types=view_types,
             ),
+            checkpoint_dir=checkpoint_dir
         )
 
     def compute_views(
@@ -466,6 +484,7 @@ class Analyzer(abc.ABC):
         percentile: Optional[float],
         threshold: Optional[int],
         is_slope_based: bool,
+        checkpoint_dir: Optional[str] = None,
     ) -> Views:
         """Computes multifaceted views for each specified metric.
 
@@ -502,6 +521,7 @@ class Analyzer(abc.ABC):
                 view_key=view_key,
                 view_type=view_type,
                 view_types=view_types,
+                checkpoint_dir=checkpoint_dir,
             )
         return views
 
@@ -514,6 +534,7 @@ class Analyzer(abc.ABC):
         percentile: Optional[float],
         threshold: Optional[int],
         is_slope_based: bool,
+        checkpoint_dir: Optional[str] = None,
     ):
         """Computes views based on predefined logical relationships in the data.
 
@@ -562,6 +583,7 @@ class Analyzer(abc.ABC):
                     view_key=view_key,
                     view_type=view_type,
                     view_types=view_types,
+                    checkpoint_dir=checkpoint_dir,
                 )
         return logical_views
 
@@ -574,6 +596,7 @@ class Analyzer(abc.ABC):
         view_types: List[ViewType],
         records: dd.DataFrame,
         is_slope_based: bool,
+        checkpoint_dir: Optional[str] = None,
     ) -> dd.DataFrame:
         """Computes a single view based on the provided parameters.
 
@@ -606,6 +629,7 @@ class Analyzer(abc.ABC):
             ),
             read_from_disk=False,
             write_to_disk=CHECKPOINT_VIEWS,
+            checkpoint_dir=checkpoint_dir,
         )
 
     def get_checkpoint_name(self, *args) -> str:
@@ -626,7 +650,7 @@ class Analyzer(abc.ABC):
             return hashlib.md5(checkpoint_name.encode("utf-8")).hexdigest()
         return checkpoint_name
 
-    def get_checkpoint_path(self, name: str) -> str:
+    def get_checkpoint_path(self, name: str, checkpoint_dir: Optional[str] = None) -> str:
         """Constructs the full path for a given checkpoint name.
 
         Args:
@@ -635,6 +659,8 @@ class Analyzer(abc.ABC):
         Returns:
             The absolute path to the checkpoint directory/file.
         """
+        if checkpoint_dir:
+            return f"{checkpoint_dir}/{name}"
         return f"{self.checkpoint_dir}/{name}"
 
     def get_hlm_checkpoint_name(self, view_types: List[ViewType]) -> str:
@@ -643,7 +669,7 @@ class Analyzer(abc.ABC):
     def get_stats_checkpoint_name(self):
         return self.get_checkpoint_name(CHECKPOINT_RAW_STATS)
 
-    def has_checkpoint(self, name: str):
+    def has_checkpoint(self, name: str, checkpoint_dir: Optional[str] = None) -> bool:
         """Checks if a checkpoint with the given name exists.
 
         A checkpoint is considered to exist if its `_metadata` file is present.
@@ -654,7 +680,7 @@ class Analyzer(abc.ABC):
         Returns:
             True if the checkpoint exists, False otherwise.
         """
-        checkpoint_path = self.get_checkpoint_path(name=name)
+        checkpoint_path = self.get_checkpoint_path(name=name, checkpoint_dir=checkpoint_dir)
         return os.path.exists(f"{checkpoint_path}/_metadata")
 
     def is_logical_view_of(self, view_key: ViewKey, parent_view_type: ViewType) -> bool:
@@ -668,7 +694,7 @@ class Analyzer(abc.ABC):
         is_logical_proc_view = self.is_logical_view_of(view_key, COL_PROC_NAME)
         return is_proc_view or is_logical_proc_view
 
-    def restore_extra_data(self, name: str, fallback: Callable[[], dict], force=False, persist=False) -> dict:
+    def restore_extra_data(self, name: str, fallback: Callable[[], dict], force=False, persist=False, checkpoint_dir: Optional[str] = None) -> dict:
         """Restores extra (non-DataFrame) data from a JSON checkpoint.
 
         If checkpointing is enabled and the checkpoint file exists (unless 'force'
@@ -685,7 +711,7 @@ class Analyzer(abc.ABC):
             A dictionary containing the restored or computed data.
         """
         if self.checkpoint:
-            data_path = f"{self.get_checkpoint_path(name=name)}.json"
+            data_path = f"{self.get_checkpoint_path(name=name, checkpoint_dir=checkpoint_dir)}.json"
             if force or not os.path.exists(data_path):
                 data = fallback()
                 fire_and_forget(
@@ -707,6 +733,7 @@ class Analyzer(abc.ABC):
         force=False,
         write_to_disk=True,
         read_from_disk=False,
+        checkpoint_dir: Optional[str] = None
     ) -> dd.DataFrame:
         """Restores a Dask DataFrame view from a Parquet checkpoint.
 
@@ -725,12 +752,12 @@ class Analyzer(abc.ABC):
             A Dask DataFrame representing the restored or computed view.
         """
         if self.checkpoint:
-            view_path = self.get_checkpoint_path(name=name)
-            if force or not self.has_checkpoint(name=name):
+            view_path = self.get_checkpoint_path(name=name, checkpoint_dir=checkpoint_dir)
+            if force or not self.has_checkpoint(name=name, checkpoint_dir=checkpoint_dir):
                 view = fallback()
                 if not write_to_disk:
                     return view
-                self.store_view(name=name, view=view)
+                self.store_view(name=name, view=view, checkpoint_dir=checkpoint_dir)
                 if not read_from_disk:
                     return view
                 get_client().cancel(view)
@@ -750,7 +777,10 @@ class Analyzer(abc.ABC):
                 hlm[metric_col] = pd.NA
                 if hlm.dtypes[col].name == "object":
                     hlm[metric_col] = hlm[metric_col].map(lambda x: set())
-                hlm[metric_col] = hlm[metric_col].mask(hlm.eval(condition), hlm[col])
+                # hlm[metric_col] = hlm[metric_col].mask(hlm.eval(condition), hlm[col])
+                hlm = hlm.copy()
+                cond = hlm.eval(condition, engine="python")
+                hlm.loc[cond, metric_col] = hlm.loc[cond, col]
                 if hlm.dtypes[col].name != "object":
                     hlm[metric_col] = pd.to_numeric(hlm[metric_col], errors="coerce")
         return hlm
@@ -768,7 +798,7 @@ class Analyzer(abc.ABC):
         with open(data_path, "w") as f:
             return json.dump(data[0], f, cls=NpEncoder)
 
-    def store_view(self, name: str, view: dd.DataFrame, compute=True, partition_size="64MB"):
+    def store_view(self, name: str, view: dd.DataFrame, compute=True, partition_size="64MB", checkpoint_dir: Optional[str] = None):
         """Stores a Dask DataFrame view to a Parquet checkpoint.
 
         The view DataFrame is repartitioned and then written to a subdirectory
@@ -787,7 +817,7 @@ class Analyzer(abc.ABC):
             if view.dtypes[col].name == "object":
                 view[col] = view[col].astype(str)
         return view.repartition(partition_size=partition_size).to_parquet(
-            self.get_checkpoint_path(name=name),
+            self.get_checkpoint_path(name=name, checkpoint_dir=checkpoint_dir),
             compute=compute,
             write_metadata_file=True,
         )
@@ -911,8 +941,10 @@ class Analyzer(abc.ABC):
                     quantile_stats(0.05, 0.95),
                     quantile_stats(0.1, 0.9),
                     quantile_stats(0.25, 0.75),
+                    # approx_distribution(),
                 ]
         view_agg.update({col: [unique_set()] for col in local_view_types_diff})
+
 
         view = (
             records.reset_index()

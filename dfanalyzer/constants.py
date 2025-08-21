@@ -76,8 +76,6 @@ LOGICAL_VIEW_TYPES = [
     ('proc_name', 'thread_id'),
 ]
 VIEW_TYPES = [
-    'file_name',
-    'proc_name',
     'time_range',
 ]
 
@@ -304,3 +302,88 @@ EVENT_COMP_VIEW = 'compute_view'
 EVENT_DET_CHAR = 'detect_characteristics'
 EVENT_READ_TRACES = 'read_traces'
 EVENT_SAVE_VIEWS = 'save_views'
+
+#########################################################
+# CONSTANTS 
+# Copied from dftracer/logger/ai.py
+#########################################################
+
+# namespacing for AI DFTracer
+class AIDFTracer:
+    ROOT_NAME = "ai_root"
+    ROOT_CAT = "ai_root"
+    ITER_COUNT_NAME = "count"
+    INIT_NAME = "init"
+    ITER_COUNT_NAME = "count"
+    INIT_NAME = "init"
+    BLOCK_NAME = "block"
+    ITER_NAME = "iter"
+    CTX_SEPARATOR = "."
+
+    class Category(StrEnum):
+        COMPUTE = "compute"
+        DATA = "data"
+        DATALOADER = "dataloader"
+        COMM = "comm"
+        DEVICE = "device"
+        CHECKPOINT = "checkpoint"
+        PIPELINE = "pipeline"
+
+    class Compute(StrEnum):
+        FORWARD = "forward"
+        BACKWARD = "backward"
+        STEP = "step"
+
+    class Data(StrEnum):
+        PREPROCESS = "preprocess"
+        ITEM = "item"
+
+    class DataLoader(StrEnum):
+        FETCH = "fetch"
+
+    class Communication(StrEnum):
+        SEND = "send"
+        RECEIVE = "receive"
+        BARRIER = "barrier"
+        BCAST = "bcast"
+        REDUCE = "reduce"
+        ALL_REDUCE = "all_reduce"
+        GATHER = "gather"
+        ALL_GATHER = "all_gather"
+        SCATTER = "scatter"
+        REDUCE_SCATTER = "reduce_scatter"
+        ALL_TO_ALL = "all_to_all"
+
+    class Device(StrEnum):
+        TRANSFER = "transfer"
+
+    class Checkpoint(StrEnum):
+        CAPTURE = "capture"
+        RESTART = "restart"
+
+    class Pipeline(StrEnum):
+        EPOCH = "epoch"
+        TRAIN = "train"
+        EVALUATE = "evaluate"
+        TEST = "test"
+
+    @staticmethod
+    def get_block(func_name: str) -> str:
+        return f"{func_name}{AIDFTracer.CTX_SEPARATOR}{AIDFTracer.BLOCK_NAME}"
+    
+    @staticmethod
+    def get_iter(func_name: str) -> str:
+        return f"{func_name}{AIDFTracer.CTX_SEPARATOR}{AIDFTracer.ITER_NAME}"
+    
+    @staticmethod
+    def get_init(func_name: str) -> str:
+        return f"{func_name}{AIDFTracer.CTX_SEPARATOR}{AIDFTracer.INIT_NAME}"
+    
+    @staticmethod
+    def get_epoch_query() -> str:
+        return f'(cat == "{AIDFTracer.Category.PIPELINE}" & (func_name == "{AIDFTracer.get_block(AIDFTracer.Pipeline.EPOCH)}" | func_name == "{AIDFTracer.Pipeline.EPOCH}"))'
+
+
+#########################################################
+
+
