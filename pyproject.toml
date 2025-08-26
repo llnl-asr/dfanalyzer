@@ -43,7 +43,7 @@ dependencies = [
 darshan = ["darshan>=3.4"]
 
 [project.scripts]
-dfanalyzer = "dfanalyzer.__main__:main"
+dfanalyzer = "dfanalyzer.__main__:cli"
 dfanalyzer-cluster = "dfanalyzer.cluster:main"
 
 [project.urls]

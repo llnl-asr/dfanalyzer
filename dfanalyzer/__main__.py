@@ -1,3 +1,6 @@
+# File: dfanalyzer/dfanalyzer/__main__.py
+
+import sys
 import hydra
 import structlog
 from distributed import Client
@@ -13,6 +16,18 @@ from .utils.warning_utils import filter_warnings
 
 filter_warnings()
 init_hydra_config_store()
+
+def cli():
+    """
+    Dispatch between the new --report mode and the usual Hydra-powered analysis.
+    """
+    if '--report' in sys.argv:
+        # Remove our flag so dfreport.py sees only its own args
+        sys.argv.remove('--report')
+        from .utils.dfreport import main as report_main
+        report_main()
+    else:
+        main()
 
 @hydra.main(version_base=None, config_name="config")
 def main(cfg: Config) -> None:
@@ -60,6 +75,6 @@ def main(cfg: Config) -> None:
         if not isinstance(cluster, ExternalCluster):
             cluster.close()  # type: ignore
 
-
 if __name__ == "__main__":
-    main()
+    cli()
+

@@ -111,6 +111,26 @@ DFAnalyzer also provides a detailed breakdown of performance metrics for each la
 └─────────────────────────────┴──────────────────┴────────────────┴───────────┴────────────────────┴──────────────────┘
 ```
 
+## Report mode
+
+You can now run all of the existing `dfreport.py` reports directly through the main `dfanalyzer` executable:
+
+```bash
+# per-node summary:
+dfanalyzer --report --node /path/to/COMPACT/
+
+# per-process, highlight the max across processes:
+dfanalyzer --report --process --aggregate /path/to/COMPACT/
+```
+#### How it works
+
+- **`cli()`** inspects `sys.argv` before Hydra ever sees it.
+- If `--report` is present, we strip it out (so `argparse` in `dfreport.py` still works unchanged) and call `dfreport.main()`.
+- Otherwise we call the original `main()`, so nothing else in your toolchain is disturbed.
+- Finally, by repointing the `dfanalyzer` console script to `cli()`, any `dfanalyzer ...` invocation will first check for `--report`.
+
+This gives you exactly what you asked for `dfanalyzer --report [dfreport options]` with minimal changes to the rest of the repo.
+
 ## Further Information
 
 For more details, to report issues, or to contribute to DFAnalyzer, please refer to the following resources:
