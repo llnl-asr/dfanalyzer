@@ -20,11 +20,12 @@ jobs:
       fail-fast: false
       matrix:
         os: ["ubuntu-22.04"]
-        python: ["3.9", "3.10", "3.11.5"]
+        python: ["3.9", "3.10", "3.11"]
     name: ${{ matrix.os }}-${{ matrix.python }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     env:
+      DFANALYZER_CLUSTER_RESTART_TIMEOUT_SECONDS: 600
       OMPI_ALLOW_RUN_AS_ROOT: 1
       OMPI_ALLOW_RUN_AS_ROOT_CONFIRM: 1
     steps:
@@ -38,11 +39,6 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python }}
-
-      - name: Create and activate virtual environment
-        run: |
-          python3 -m venv venv
-          source venv/bin/activate
 
       - name: Install system dependencies
         run: |
@@ -72,14 +68,12 @@ jobs:
 
       - name: Install Python dependencies
         run: |
-          source venv/bin/activate
           python -m pip install --upgrade pip
           pip install --upgrade meson-python setuptools wheel
           pip install -r tests/requirements.txt
 
       - name: Install DFAnalyzer
         run: |
-          source venv/bin/activate
           pip install .[darshan] \
             -Csetup-args="--prefix=$HOME/.local" \
             -Csetup-args="-Denable_tests=true" \
@@ -103,7 +97,6 @@ jobs:
 
       - name: Run Python tests with coverage
         run: |
-          source venv/bin/activate
           if [[ "${{ steps.test-type.outputs.run_full }}" == "true" ]]; then
             echo "Running FULL test suite"
             pytest -m full --verbose --cov=dfanalyzer --cov-report=xml
@@ -112,17 +105,40 @@ jobs:
             pytest -m smoke --verbose --cov=dfanalyzer --cov-report=xml
           fi
 
-      - name: Run DFAnalyzer
+      - name: Run DFAnalyzer with external cluster
         run: |
-          source venv/bin/activate
-          # dfanalyzer analyzer=darshan percentile=0.99 trace_path=tests/data/extracted/darshan-raw view_types=[file_name,proc_name] metrics=[time]
-          dfanalyzer analyzer=darshan percentile=0.99 trace_path=tests/data/extracted/darshan-posix-dxt
-          dfanalyzer analyzer=dftracer analyzer/preset=dlio percentile=0.99 trace_path=tests/data/extracted/dftracer-dlio
-          dfanalyzer analyzer=recorder percentile=0.99 trace_path=tests/data/extracted/recorder-posix-parquet
+          # Start the cluster in the background and capture scheduler address
+          dfanalyzer-cluster cluster=local cluster.processes=False \
+            +cluster.protocol=tcp +cluster.worker_class=distributed.nanny.Nanny > cluster.log 2>&1 &
+          cluster_pid=$!
+
+          # Wait for the scheduler address to appear in the log (file will contain only the address)
+          for i in {1..30}; do
+            if grep -q '^tcp://' cluster.log; then break; fi
+            sleep 1
+          done
+          scheduler_address=$(grep '^tcp://' cluster.log | tail -1)
+          echo "Scheduler address: $scheduler_address"
+
+          # Run analysis commands using the external cluster
+          if [[ "${{ steps.test-type.outputs.run_full }}" == "true" ]]; then
+            dfanalyzer analyzer=darshan trace_path=tests/data/extracted/darshan-posix-dxt \
+              cluster=external cluster.restart_on_connect=True cluster.scheduler_address=$scheduler_address          
+            dfanalyzer analyzer=recorder trace_path=tests/data/extracted/recorder-posix-parquet \
+              cluster=external cluster.restart_on_connect=True cluster.scheduler_address=$scheduler_address
+            dfanalyzer analyzer=dftracer analyzer/preset=dlio trace_path=tests/data/extracted/dftracer-dlio \
+              cluster=external cluster.restart_on_connect=True cluster.scheduler_address=$scheduler_address
+          else
+            dfanalyzer analyzer=dftracer analyzer/preset=dlio trace_path=tests/data/extracted/dftracer-dlio \
+              cluster=external cluster.restart_on_connect=False cluster.scheduler_address=$scheduler_address
+          fi          
+
+          # Kill the cluster process
+          kill $cluster_pid || true
+          wait $cluster_pid 2>/dev/null || true
 
       - name: Run C++ tests
         run: |
-          source venv/bin/activate
           rm -rf build
           meson build --prefix=$HOME/.local -Denable_tests=true -Denable_tools=true
           meson compile -C build --verbose

@@ -18,7 +18,7 @@ parameters in several ways:
 
    .. code-block:: bash
 
-      dfanalyzer trace_path=path/to/traces analyzer.preset=dlio percentile=0.99
+      dfanalyzer trace_path=path/to/traces analyzer/preset=dlio
 
 2. **Group selection**:
 
@@ -47,22 +47,10 @@ Core Parameters
      - string
      - Required
      - Path to the I/O trace data for analysis.
-   * - ``percentile``
-     - float
-     - null
-     - Percentile threshold for significant I/O operations.
-   * - ``threshold``
-     - int
-     - null
-     - Severity threshold for significant I/O operations.
    * - ``view_types``
      - list[str]
      - ``["file_name", "proc_name", "time_range"]``
      - A list of perspectives to analyze the data from.
-   * - ``time_view_type``
-     - str
-     - ``time_range``
-     - The type of time-based view to use for analysis.
    * - ``debug``
      - bool
      - ``false``
@@ -109,7 +97,7 @@ Common Analyzer Parameters
    * - ``analyzer.time_granularity``
      - float
      - Varies
-     - Time granularity for analysis (in nanoseconds). Defaults vary by analyzer.
+     - Time granularity for analysis (in seconds). Defaults vary by analyzer.
    * - ``analyzer.time_resolution``
      - float
      - Varies
@@ -149,8 +137,8 @@ For analyzing DFTracer trace files. This is the **default** analyzer.
      - Description
    * - ``analyzer.time_granularity``
      - float
-     - 1e6
-     - Time granularity for DFTracer (in nanoseconds).
+     - 1
+     - Time granularity for DFTracer (in seconds).
    * - ``analyzer.time_resolution``
      - float
      - 1e6
@@ -171,8 +159,8 @@ For analyzing Darshan DXT trace files.
      - Description
    * - ``analyzer.time_granularity``
      - float
-     - 1e3
-     - Time granularity for Darshan (in nanoseconds).
+     - 1
+     - Time granularity for Darshan (in seconds).
    * - ``analyzer.time_resolution``
      - float
      - 1e3
@@ -193,8 +181,8 @@ For analyzing Recorder trace files.
      - Description
    * - ``analyzer.time_granularity``
      - float
-     - 1e7
-     - Time granularity for Recorder (in nanoseconds).
+     - 1
+     - Time granularity for Recorder (in seconds).
    * - ``analyzer.time_resolution``
      - float
      - 1e7
@@ -323,5 +311,3 @@ For environments using the LSF workload manager.
 
 PBS Cluster (``cluster=pbs``)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-For environments using the PBS workload manager.

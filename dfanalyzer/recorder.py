@@ -48,14 +48,15 @@ class RecorderAnalyzer(Analyzer):
         traces: dd.DataFrame,
         view_types: List[ViewType],
     ) -> dd.DataFrame:
-        traces[COL_TIME] = traces[COL_TIME].astype('double[pyarrow]')
-        traces['acc_pat'] = traces['acc_pat'].astype('uint8[pyarrow]')
+        traces[COL_TIME] = traces[COL_TIME].astype('Float64')
+        traces['acc_pat'] = traces['acc_pat'].astype('Int8')
         traces['count'] = 1
-        traces['count'] = traces['count'].astype('uint64[pyarrow]')
-        traces['io_cat'] = traces['io_cat'].astype('uint8[pyarrow]')
+        traces['count'] = traces['count'].astype('Int64')
+        traces['io_cat'] = traces['io_cat'].astype('Int8')
         time_ranges = self._compute_time_ranges(
             global_min_max=self.global_min_max,
             time_granularity=self.time_granularity,
+            time_resolution=self.time_resolution,
         )
         traces = (
             traces[(traces['cat'] == CAT_POSIX) & (traces['io_cat'].isin(IO_CATS))]
@@ -63,16 +64,19 @@ class RecorderAnalyzer(Analyzer):
             .drop(columns=DROPPED_COLS, errors='ignore')
         )
         traces['cat'] = 'posix'
-        traces['cat'] = traces['cat'].astype('string[pyarrow]')
+        traces['cat'] = traces['cat'].astype('string')
         return traces
 
-    def compute_total_count(self, traces: dd.DataFrame) -> int:
-        return traces[(traces['cat'] == CAT_POSIX) & (traces['io_cat'].isin(IO_CATS))].index.count().persist()
+    def get_total_event_count(self, traces: dd.DataFrame) -> int:
+        return traces[(traces['cat'] == CAT_POSIX) & (traces['io_cat'].isin(IO_CATS))].reduction(len, sum).persist()
+
+    def get_unique_host_count(self, traces: dd.DataFrame):
+        return traces["hostname"].nunique()
 
     @staticmethod
-    def _compute_time_ranges(global_min_max: dict, time_granularity: int):
+    def _compute_time_ranges(global_min_max: dict, time_granularity: float, time_resolution: float):
         tmid_min, tmid_max = global_min_max['tmid']
-        time_ranges = np.arange(tmid_min, tmid_max, time_granularity)
+        time_ranges = np.arange(tmid_min, tmid_max, int(time_granularity * time_resolution))
         return get_client().scatter(time_ranges)
 
     @staticmethod

@@ -27,9 +27,6 @@ class DarshanAnalyzer(Analyzer):
         extra_columns_fn=None,
         logical_view_types=False,
         metric_boundaries=...,
-        percentile=None,
-        threshold=None,
-        time_view_type=None,
         unoverlapped_posix_only=False,
     ):
         if not trace_path.endswith('.darshan') and not os.path.isdir(trace_path):
@@ -52,21 +49,18 @@ class DarshanAnalyzer(Analyzer):
         if all('DXT_POSIX' in report.records for report in reports):
             # Let the analyzer do read_trace etc as normal
             return super().analyze_trace(
-                trace_path,
-                view_types,
-                exclude_characteristics,
-                logical_view_types,
-                metric_boundaries,
-                percentile,
-                threshold,
-                time_view_type,
-                unoverlapped_posix_only,
+                trace_path=trace_path,
+                view_types=view_types,
+                exclude_characteristics=exclude_characteristics,
+                extra_columns=extra_columns,
+                extra_columns_fn=extra_columns_fn,
+                logical_view_types=logical_view_types,
+                metric_boundaries=metric_boundaries,
+                unoverlapped_posix_only=unoverlapped_posix_only,
             )
 
         if any(view_type not in ['file_name', 'proc_name'] for view_type in view_types):
             raise ValueError("Only 'file_name' and 'proc_name' view types are supported for non-DXT traces.")
-
-        is_slope_based = threshold is not None
 
         file_name_df = pd.concat(map(self._create_file_name_view, reports), ignore_index=True)
         file_name_ddf = (
@@ -88,10 +82,7 @@ class DarshanAnalyzer(Analyzer):
         return self._analyze_main_view(
             main_view=file_name_view,
             metrics=metrics,
-            percentile=percentile,
-            threshold=threshold,
             view_types=view_types,
-            is_slope_based=is_slope_based,
             raw_stats=raw_stats,
             exclude_characteristics=exclude_characteristics,
         )
@@ -100,7 +91,7 @@ class DarshanAnalyzer(Analyzer):
         df = pd.concat(map(self._create_dxt_dataframe, self.reports), ignore_index=True)
         return dd.from_pandas(df, npartitions=len(self.reports))
 
-    def compute_job_time(self, traces: dd.DataFrame) -> float:
+    def get_job_time(self, traces: dd.DataFrame) -> float:
         return self.job_time
 
     def _calculate_job_time(self, report: d.DarshanReport) -> float:
@@ -146,7 +137,7 @@ class DarshanAnalyzer(Analyzer):
                             'func_name': 'read',
                             'host_name': host_name,
                             'io_cat': IOCategory.READ.value,
-                            'time_range': int(start_times[i] * self.time_granularity),
+                            'time_range': int(start_times[i] * self.time_granularity * self.time_resolution),
                             'cat': 'posix',
                             'acc_pat': 0,  # Would need more logic for random access patterns
                             'count': 1,
@@ -176,7 +167,7 @@ class DarshanAnalyzer(Analyzer):
                             'func_name': 'write',
                             'host_name': host_name,
                             'io_cat': IOCategory.WRITE.value,
-                            'time_range': int(start_times[i] * self.time_granularity),
+                            'time_range': int(start_times[i] * self.time_granularity * self.time_resolution),
                             'cat': 'posix',
                             'acc_pat': 0,  # Would need more logic for random access patterns
                             'count': 1,

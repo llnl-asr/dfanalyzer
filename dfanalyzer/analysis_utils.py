@@ -33,10 +33,7 @@ def fix_dtypes(df: pd.DataFrame):
     double_cols.extend([col for col in df.columns if col.endswith('_slope')])
     double_cols.extend([col for col in df.columns if col.endswith('_pct')])
     size_cols = [col for col in df.columns if col.endswith('_size')]
-    # df[int_cols] = df[int_cols].astype('int64[pyarrow]')
-    # df[double_cols] = df[double_cols].astype('double[pyarrow]')
-    # df[size_cols] = df[size_cols].astype('int64[pyarrow]')
-    df[int_cols] = df[int_cols].astype('Int32')
+    df[int_cols] = df[int_cols].astype('Int64')
     df[double_cols] = df[double_cols].astype('Float64')
     df[size_cols] = df[size_cols].astype('Int64')
     return df
@@ -141,7 +138,8 @@ def set_unique_counts(df: pd.DataFrame, layer: str):
         if COL_FILE_NAME in unique_col and 'posix' not in layer:
             continue
         nunique_col = unique_col.replace('_unique', '_nunique')
-        df[nunique_col] = df[unique_col].map(len).astype('uint64[pyarrow]')
+        # Handle null values before applying len() - null values should map to 0
+        df[nunique_col] = df[unique_col].map(lambda x: len(x) if pd.notna(x) else 0).astype('uint64[pyarrow]')
     return df.drop(columns=unique_cols)
 
 
@@ -159,7 +157,7 @@ def split_duration_records_vectorized(
 
     if max_chunks == 0:
         df[COL_TIME_RANGE] = df[COL_TIME_START] // (time_granularity * time_resolution)
-        df[COL_TIME_RANGE] = df[COL_TIME_RANGE].astype('uint64[pyarrow]')
+        df[COL_TIME_RANGE] = df[COL_TIME_RANGE].astype('int64')
         return df.copy()
 
     # Create expansion indices
@@ -190,7 +188,7 @@ def split_duration_records_vectorized(
     result_df[COL_TIME_START] = ts_base.repeat(n_chunks) + ts_offsets
 
     result_df[COL_TIME_RANGE] = result_df[COL_TIME_START] // (time_granularity * time_resolution)
-    result_df[COL_TIME_RANGE] = result_df[COL_TIME_RANGE].astype('uint64[pyarrow]')
+    result_df[COL_TIME_RANGE] = result_df[COL_TIME_RANGE].astype('int64')
 
     counts = df[COL_COUNT].to_numpy()
     expanded_counts = counts.repeat(n_chunks)

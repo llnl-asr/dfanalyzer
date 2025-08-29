@@ -34,17 +34,19 @@ class AnalysisRuntimeConfig:
     num_threads_per_worker: int
     num_workers: int
     processes: bool
-    threshold: float
     verbose: bool
     working_dir: str
 
 
 @dc.dataclass
 class RawStats:
-    job_time: dd.core.Scalar
+    job_time: "dd.Scalar"
     time_granularity: int
     time_resolution: int
-    total_count: dd.core.Scalar
+    total_event_count: "dd.Scalar"
+    unique_file_count: "dd.Scalar"
+    unique_host_count: "dd.Scalar"
+    unique_process_count: "dd.Scalar"
 
 
 @dc.dataclass
@@ -88,8 +90,6 @@ class ViewResult:
     view_type: ViewType
 
 
-MainIndex = dd.DataFrame
-MainView = dd.DataFrame
 View = dd.DataFrame
 
 Characteristics = Dict[str, RuleResult]
@@ -193,7 +193,7 @@ class OutputType:
 @dc.dataclass
 class AnalyzerResultType:
     _hlms: Dict[Layer, dd.DataFrame]
-    _main_views: Dict[Layer, MainView]
+    _main_views: Dict[Layer, dd.DataFrame]
     _metric_boundaries: ViewMetricBoundaries
     _traces: Optional[dd.DataFrame]
     checkpoint_dir: str
@@ -202,6 +202,22 @@ class AnalyzerResultType:
     raw_stats: RawStats
     view_types: List[ViewType]
     views: Dict[Layer, Views]
+
+    def get_hlm(self, layer: Layer) -> dd.DataFrame:
+        return self._hlms[layer]
+
+    def get_main_view(self, layer: Layer) -> dd.DataFrame:
+        return self._main_views[layer]
+
+    def get_flat_view(self, view_key_type: Union[ViewKey, ViewType]) -> pd.DataFrame:
+        if not isinstance(view_key_type, tuple):
+            view_key_type = (view_key_type,)
+        return self.flat_views[view_key_type]
+
+    def get_layer_view(self, layer: Layer, view_key_type: Union[ViewKey, ViewType]) -> pd.DataFrame:
+        if not isinstance(view_key_type, tuple):
+            view_key_type = (view_key_type,)
+        return self.views[layer][view_key_type]
 
 
 def humanized_metric_name(metric: Metric):

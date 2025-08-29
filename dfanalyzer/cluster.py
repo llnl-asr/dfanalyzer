@@ -12,7 +12,6 @@ from .config import (
     ClusterConfig,
     CustomHelpConfig,
     CustomJobConfig,
-    CustomLoggingConfig,
     LocalClusterConfig,
     LSFClusterConfig,
     PBSClusterConfig,
@@ -35,7 +34,6 @@ class Config:
             {"cluster": "local"},
             "_self_",
             {"override hydra/help": "custom"},
-            {"override hydra/job_logging": "custom"},
         ]
     )
     cluster: ClusterConfig = MISSING
@@ -46,7 +44,6 @@ class Config:
 cs = ConfigStore.instance()
 cs.store(group="hydra/help", name="custom", node=asdict(CustomHelpConfig()))
 cs.store(group="hydra/job", name="custom", node=CustomJobConfig)
-cs.store(group="hydra/job_logging", name="custom", node=CustomLoggingConfig)
 cs.store(name="config", node=Config)
 cs.store(group="cluster", name="local", node=LocalClusterConfig)
 cs.store(group="cluster", name="lsf", node=LSFClusterConfig)
@@ -60,7 +57,7 @@ ClusterType = Union[ExternalCluster, LocalCluster, LSFCluster, PBSCluster, SLURM
 @hydra.main(version_base=None, config_name="config")
 def main(cfg: Config) -> None:
     cluster: ClusterType = instantiate(cfg.cluster)
-    print(cluster.scheduler.address)
+    print(cluster.scheduler.address, flush=True)
     try:
         signal.pause()
     except KeyboardInterrupt:

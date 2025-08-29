@@ -66,7 +66,7 @@ def set_main_metrics(df: pd.DataFrame):
     return df.sort_index(axis=1)
 
 
-def set_view_metrics(df: pd.DataFrame, is_view_process_based: bool, epsilon=1e-9):
+def set_view_metrics(df: pd.DataFrame, is_view_process_based: bool, time_granularity: float):
     metrics = set(df.columns.get_level_values(0))
 
     std_cols = [(metric, 'std') for metric in metrics]
@@ -84,8 +84,10 @@ def set_view_metrics(df: pd.DataFrame, is_view_process_based: bool, epsilon=1e-9
         elif metric.endswith('time'):
             if is_view_process_based:
                 df[(metric, 'per')] = df[(metric, 'max')] / df[(metric, 'max')].sum()
+                df[(metric, 'util')] = df[(metric, 'max')] / time_granularity
             else:
                 df[(metric, 'per')] = df[(metric, 'sum')] / df[(metric, 'sum')].sum()
+                df[(metric, 'util')] = df[(metric, 'sum')] / time_granularity
 
     for count_per_col, time_per_col in _find_metric_pairs(df.columns, 'count', 'time', 'per'):
         metric, _ = count_per_col
@@ -101,6 +103,7 @@ def set_cross_layer_metrics(
     df: pd.DataFrame,
     layer_defs: Dict[Layer, str],
     layer_deps: Dict[Layer, Optional[Layer]],
+    async_layers: List[Layer],
     is_view_process_based: bool,
 ) -> pd.DataFrame:
     time_metric = 'time_sum' if is_view_process_based else 'time_max'
@@ -118,64 +121,18 @@ def set_cross_layer_metrics(
         overhead_time_col = f"{layer}_overhead_{time_metric}"
         child_times = sum(df[f"{child}_{time_metric}"].fillna(0) for child in child_layers)
         df[overhead_time_col] = np.maximum(df[f"{layer}_{time_metric}"] - child_times, 0)
-        df[overhead_time_col] = df[overhead_time_col].astype('double[pyarrow]')
+        df[overhead_time_col] = df[overhead_time_col].astype('Float64')
         metric_cols.append(overhead_time_col)
 
     # Set unoverlapped times if there is compute time
     if compute_time_metric in df.columns:
-        # Set unoverlapped time metrics (this has to come before time percentage calc.)
-        for time_col in _find_metric(df.columns, time_metric):
-            if (
-                time_col.startswith('u_')
-                or time_col.startswith('d_')
-                or f'compute_{time_metric}' in time_col
-                or 'app_' in time_col
-                or 'training_' in time_col
-            ):
-                continue
+        # Set unoverlapped time metrics
+        for async_layer in async_layers:
+            time_col = f"{async_layer}_{time_metric}"
             compute_times = df[compute_time_metric].fillna(0)
-            time_series = df[time_col].astype('float64')
-            compute_series = compute_times.astype('float64')
+            time_series = df[time_col].astype('Float64')
+            compute_series = compute_times.astype('Float64')
             unoverlapped_series = (time_series - compute_series).clip(lower=0)
-            df[f"u_{time_col}"] = pd.array(unoverlapped_series, dtype='double[pyarrow]')
+            df[f"u_{time_col}"] = pd.array(unoverlapped_series, dtype='Float64')
 
-    return df.replace([np.inf, -np.inf], np.nan).sort_index(axis=1)
-
-
-def set_metric_scores(
-    df: pd.DataFrame,
-    metric_boundaries: MetricBoundaries,
-    unscored_metrics: List[str] = [],
-) -> pd.DataFrame:
-    metrics = [col for col in df.columns if col not in unscored_metrics and not col.startswith('d_')]
-
-    score_cols = {}
-
-    for metric in metrics:
-        score_col = f"{metric}_score"
-        if metric.endswith('_pct') or metric.endswith('_per') or metric.endswith('_util'):
-            metric_value = df[metric]
-            if metric.endswith('_util'):
-                metric_value = 1 - metric_value
-            score_cols[score_col] = np.digitize(metric_value, bins=PERCENTAGE_BINS, right=True)
-        elif metric.endswith('_slope'):
-            score_cols[score_col] = np.digitize(df[metric], bins=SLOPE_BINS, right=True)
-        elif metric.endswith('_intensity_mean'):
-            score_cols[score_col] = np.digitize(df[metric], bins=INTENSITY_BINS, right=True)
-        if score_col in score_cols:
-            score_cols[score_col] = np.where(pd.isna(df[metric]), np.nan, score_cols[score_col])
-
-    for metric in metric_boundaries:
-        score_col = f"{metric}_score"
-        metric_pct = df[metric] / metric_boundaries[metric]
-        if 'bw_mean' in metric:
-            metric_pct = 1 - metric_pct
-        score_cols[score_col] = np.digitize(metric_pct, bins=PERCENTAGE_BINS, right=True)
-        score_cols[score_col] = np.where(np.isnan(df[metric]), np.nan, score_cols[score_col])
-
-    if score_cols:
-        score_df = pd.DataFrame(score_cols, index=df.index)
-        score_df = score_df.astype('Int64')
-        df = pd.concat([df, score_df], axis=1)
-
-    return df.sort_index(axis=1)
+    return df.replace([np.inf, -np.inf], pd.NA).sort_index(axis=1)

@@ -55,7 +55,7 @@ Here's an example of how to run DFAnalyzer using sample data included in the rep
 # For example, to extract the 'dftracer-dlio' sample used below:
 # mkdir -p tests/data/extracted
 # tar -xzf tests/data/dftracer-dlio.tar.gz -C tests/data/extracted
-dfanalyzer analyzer/preset=dlio percentile=0.9 trace_path=tests/data/extracted/dftracer-dlio view_types=[time_range]
+dfanalyzer analyzer/preset=dlio trace_path=tests/data/extracted/dftracer-dlio view_types=[time_range]
 ```
 
 This command analyzes the traces and prints a high-level summary of the application's execution. Below is a sample of the "Time Period Summary" output:
