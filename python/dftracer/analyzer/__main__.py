@@ -1,17 +1,18 @@
+import dftracer.analyzer.utils.warning_utils  # noqa: F401
 import hydra
+import signal
 import structlog
 from distributed import Client
 from hydra.core.hydra_config import HydraConfig
 from hydra.utils import instantiate
 from omegaconf import OmegaConf
 
-from . import AnalyzerType, ClusterType, OutputType
+from . import AnalyzerType, ClusterType, InputType, OutputType
 from .cluster import ExternalCluster
 from .config import CLUSTER_RESTART_TIMEOUT_SECONDS, Config, init_hydra_config_store
+from .input import FileInput, MofkaInput, ZMQInput
 from .utils.log_utils import configure_logging, console_block, log_block
-from .utils.warning_utils import filter_warnings
 
-filter_warnings()
 init_hydra_config_store()
 
 
@@ -47,20 +48,54 @@ def main(cfg: Config) -> None:
             verbose=cfg.verbose,
         )
 
-    # Analyze trace
-    result = analyzer.analyze_trace(
-        exclude_characteristics=cfg.exclude_characteristics,
-        logical_view_types=cfg.logical_view_types,
-        metric_boundaries=OmegaConf.to_object(cfg.metric_boundaries),
-        trace_path=cfg.trace_path,
-        unoverlapped_posix_only=cfg.unoverlapped_posix_only,
-        view_types=cfg.view_types,
-    )
+    input: InputType = instantiate(cfg.input)
+    output: OutputType = instantiate(cfg.output)
 
-    # Handle result
-    with console_block("Output"):
-        output: OutputType = instantiate(cfg.output)
-        output.handle_result(result=result)
+    if isinstance(input, FileInput):
+        # Analyze trace
+        result = analyzer.analyze_file(
+            exclude_characteristics=cfg.exclude_characteristics,
+            logical_view_types=cfg.logical_view_types,
+            metric_boundaries=OmegaConf.to_object(cfg.metric_boundaries),
+            path=cfg.input.path,
+            view_types=cfg.view_types,
+        )
+        with console_block("Output"):
+            # Handle result
+            output.handle_result(result=result)
+    elif isinstance(input, ZMQInput):
+        print(f"Starting stream analysis from: {input.address}")
+        analysis_stream = analyzer.analyze_zmq(
+            address=input.address,
+            exclude_characteristics=cfg.exclude_characteristics,
+            logical_view_types=cfg.logical_view_types,
+            metric_boundaries=OmegaConf.to_object(cfg.metric_boundaries),
+            view_types=cfg.view_types,
+        )
+        analysis_stream = analysis_stream.map(lambda result: result.flat_views[("epoch",)].to_json(orient="index"))
+        analysis_stream.sink(print)
+        analysis_stream.to_zmq(output.address)
+        analysis_stream.visualize("analysis")
+        analysis_stream.start()
+        print("Streaming analysis started. Press Ctrl+C to exit.")
+        try:
+            signal.pause()
+        except KeyboardInterrupt:
+            print("\nShutting down streaming analysis...")
+    elif isinstance(input, MofkaInput):
+        if not hasattr(output, "handle_result"):
+            raise ValueError("Output does not support handle_result for Mofka input")
+        analyzer.analyze_mofka(
+            group_file=input.group_file,
+            topic_name=input.topic_name,
+            exclude_characteristics=cfg.exclude_characteristics,
+            logical_view_types=cfg.logical_view_types,
+            metric_boundaries=OmegaConf.to_object(cfg.metric_boundaries),
+            view_types=cfg.view_types,
+            output_handler=output.handle_result,
+        )
+    else:
+        raise ValueError(f"Unsupported input configuration type: {type(cfg.input)}")
 
     # Teardown cluster
     with console_block("Cluster teardown"):

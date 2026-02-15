@@ -198,3 +198,9 @@ cython_debug/
 outputs/
 tmp/
 VERSION.txt
+
+# Spack
+/spack.lock
+/._view
+/view
+/.spack-env

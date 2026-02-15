@@ -17,8 +17,11 @@ from .analyzer import Analyzer
 from .constants import (
     COL_ACC_PAT,
     COL_COUNT,
+    COL_EPOCH,
+    COL_FILE_HASH,
     COL_FILE_NAME,
     COL_FUNC_NAME,
+    COL_HOST_HASH,
     COL_HOST_NAME,
     COL_IO_CAT,
     COL_PROC_NAME,
@@ -260,7 +263,8 @@ def load_objects_dict(
                             I.closed(json_dict["ts"], json_dict["ts"] + json_dict["dur"])
                         )
                 final_dict.update(io_function(json_dict))
-                final_dict.update(extra_columns_fn(json_dict) if extra_columns_fn else {})
+                if extra_columns and extra_columns_fn:
+                    final_dict.update(extra_columns_fn(json_dict))
             # check if all extra columns are present
             if extra_columns and not all(col in final_dict for col in extra_columns):
                 missing_cols = [col for col in extra_columns if col not in final_dict]
@@ -381,85 +385,142 @@ class DFTracerAnalyzer(Analyzer):
             with log_block("_fix_time+persist"):
                 traces = self._fix_time(traces).persist()
             with log_block("wait_all"):
-                wait([traces, self._file_hashes, self._host_hashes, self._string_hashes, self._metadata])
+                if isinstance(traces, dd.DataFrame):
+                    wait([traces, self._file_hashes, self._host_hashes, self._string_hashes, self._metadata])
         else:
             logger.error("Unable to load traces")
             exit(1)
+        # ===============================================
         return self._rename_columns(traces)
 
-    def postread_trace(
-        self,
-        traces: dd.DataFrame,
-        view_types: List[ViewType],
-    ) -> dd.DataFrame:
-        with log_block("filter_files"):
-            traces = traces[
-                traces[COL_FILE_NAME].isna() | ~traces[COL_FILE_NAME].str.contains("|".join(IGNORED_FILE_PATTERNS))
-            ]
+    def read_zmq(self, trace_address, extra_columns, extra_columns_fn):
+        trace_stream = super().read_zmq(
+            trace_address=trace_address,
+            extra_columns=extra_columns,
+            extra_columns_fn=extra_columns_fn,
+        )
+        return trace_stream.map(
+            lambda line: next(
+                load_json(
+                    line,
+                    time_approximate=self.time_approximate,
+                    extra_columns=extra_columns,
+                    extra_columns_fn=extra_columns_fn,
+                )
+            )
+        )
 
-        # Set epochs
-        with log_block("assign_epochs"):
-            if self.assign_epochs:
-                if "epoch" not in self.preset.layer_defs:
-                    raise ValueError("Epoch layer definition is missing")
-                epochs = traces.query(self.preset.layer_defs["epoch"]).compute()
-                epochs_with_index = epochs.sort_values(["pid", "time_start"]).reset_index(drop=True)
-                epochs_with_index["epoch"] = epochs_with_index.groupby("pid").cumcount() + 1
-                epoch_boundaries = epochs_with_index[["pid", "time_start", "time_end", "epoch"]]
-                traces = traces.map_partitions(self._set_epochs, epoch_boundaries=epoch_boundaries)
+    def postread_trace(self, traces, view_types):
+        # print("Post-reading trace", traces)
+        # print("Post-reading trace columns", traces.columns)
+        is_dask = isinstance(traces, dd.DataFrame)
+
+        if not is_dask and traces.empty:
+            logger.warning("No traces found for postread_trace")
+            return traces
+
+        # Ignore redundant files
+        with log_block("filter_files"):
+            if COL_FILE_NAME in traces.columns:
+                traces = traces[
+                    traces[COL_FILE_NAME].isna()
+                    | ~traces[COL_FILE_NAME].str.contains("|".join(IGNORED_FILE_PATTERNS), na=False)
+                ]
+            else:
+                traces[COL_FILE_NAME] = traces[COL_FILE_HASH].astype(str).replace("nan", "")
 
         # Ignore redundant function calls
         with log_block("filter_functions"):
             traces = traces[~traces[COL_FUNC_NAME].isin(IGNORED_FUNC_NAMES)]
             traces = traces[~traces[COL_FUNC_NAME].str.contains("|".join(IGNORED_FUNC_PATTERNS))]
 
+        # Set epochs
+        with log_block("assign_epochs"):
+            if self.assign_epochs:
+                if "epoch" not in self.preset.layer_defs:
+                    raise ValueError("Epoch layer definition is missing")
+                epochs = traces.query(self.preset.layer_defs["epoch"])
+                if is_dask:
+                    epochs = epochs.compute()
+                epochs_with_index = epochs.sort_values(["pid", "time_start"]).reset_index(drop=True)
+                epochs_with_index["epoch"] = epochs_with_index.groupby("pid").cumcount() + 1
+                epoch_boundaries = epochs_with_index[["pid", "time_start", "time_end", "epoch"]]
+                if is_dask:
+                    traces = traces.map_partitions(self._set_epochs, epoch_boundaries=epoch_boundaries)
+                else:
+                    traces = self._set_epochs(traces, epoch_boundaries=epoch_boundaries)
+
         with log_block("wait"):
-            _ = wait(traces)
+            if is_dask:
+                wait(traces)
 
         with log_block("set_basic_columns"):
             traces[COL_ACC_PAT] = 0
             traces[COL_COUNT] = 1
 
-        # drop columns that are not needed
-        # if COL_FILE_NAME not in view_types:
-        #     traces = traces.drop(columns=[COL_FILE_NAME], errors='ignore')
-        # if COL_HOST_NAME not in view_types:
-        #     traces = traces.drop(columns=[COL_HOST_NAME], errors='ignore')
+        if is_dask:
+            traces = (
+                traces.map_partitions(self._set_proc_names)
+                .map_partitions(self._fix_file_posix_category)
+                .map_partitions(self._sanitize_size)
+            )
+        else:
+            traces = self._set_proc_names(traces)
+            traces = self._fix_file_posix_category(traces)
+            traces = self._sanitize_size(traces)
 
-        # Set batches
-        # traces['batch'] = traces.groupby(['func_name', 'step']).cumcount() + 1
-        # batch_counts = traces['batch'].value_counts()
-        # last_valid_batch = batch_counts[batch_counts > 1].index.max()
-        # traces['batch'] = traces['batch'].mask(
-        #     traces['batch'] > last_valid_batch, pd.NA
-        # )
+        return traces
 
-        # pytorch reads images instead of batches
-        # e.g. 4 workers = 0..4 images = who starts/finishes first
-
-        # epoch and step make sense in dlio layer
-
-        # to put step back, target variable = previous compute + my io
-
-        # Set steps depending on time ranges
-        # step_time_ranges = traces.groupby(['pid', 'epoch', 'step']).agg({'ts': min, 'te': max})
-        # traces = traces.map_partitions(
-        #     self._set_steps, step_time_ranges=step_time_ranges.reset_index()
-        # )
-
+    def postread_zmq(self, trace_stream, view_types, extra_columns, extra_columns_fn):
+        columns = self._get_columns(extra_columns)
         return (
-            traces.map_partitions(self._set_proc_names)
-            .map_partitions(self._fix_file_posix_category)
-            .map_partitions(self._sanitize_size_offset)
+            trace_stream.map(lambda traces: pd.DataFrame(traces, columns=columns))
+            .map(self._handle_metadata)
+            .map(self._fix_time)
+            .map(self._rename_columns)
+            .map(lambda df: df.assign(time_range=1))
+            .map(self.postread_trace, view_types=view_types)
         )
+
+    def normalize_stream_event(
+        self,
+        event: dict,
+        extra_columns: Optional[Dict[str, str]] = None,
+        extra_columns_fn: Optional[Callable[[dict], dict]] = None,
+    ) -> dict:
+        logger.debug(
+            "stream.normalize_input",
+            name=event.get("name"),
+            ph=event.get("ph"),
+            args_name=event.get("args", {}).get("name"),
+        )
+        normalized_event = next(
+            load_objects_dict(
+                event,
+                time_approximate=self.time_approximate,
+                extra_columns=extra_columns,
+                extra_columns_fn=extra_columns_fn,
+            )
+        )
+        return normalized_event
+
+    def handle_stream_events(
+        self,
+        events: List[dict],
+        view_types: List[ViewType],
+        extra_columns: Optional[Dict[str, str]] = None,
+    ) -> pd.DataFrame:
+        columns = self._get_columns(extra_columns)
+        traces = pd.DataFrame(events, columns=columns)
+        traces = self._handle_metadata(traces)
+        traces = self._fix_time(traces)
+        traces = self._rename_columns(traces)
+        traces = traces.assign(time_range=1)
+        traces = self.postread_trace(traces=traces, view_types=view_types)
+        return traces
 
     def get_job_time(self, traces):
         return super().get_job_time(traces) / self.time_resolution
-
-    def get_time_boundary_layer(self):
-        if self.assign_epochs:
-            return "epoch"
-        return super().get_time_boundary_layer()
 
     def get_unique_file_count(self, traces: dd.DataFrame):
         return traces["file_hash"].nunique()
@@ -469,69 +530,6 @@ class DFTracerAnalyzer(Analyzer):
 
     def get_unique_process_count(self, traces: dd.DataFrame):
         return traces["pid"].nunique()
-
-    @staticmethod
-    def _set_epochs(df: pd.DataFrame, epoch_boundaries: pd.DataFrame):
-        df["epoch"] = pd.NA
-
-        # Iterate over each epoch boundary to find matching events
-        for _, epoch_boundary in epoch_boundaries.iterrows():
-            pid = epoch_boundary["pid"]
-            start = epoch_boundary["time_start"]
-            end = epoch_boundary["time_end"]
-
-            # Find rows in the partition that match the pid and fall within the time interval
-            mask = (df["pid"] == pid) & (df["time_start"] >= start) & (df["time_start"] < end)
-
-            # Assign the epoch number to the matching rows
-            df.loc[mask, "epoch"] = epoch_boundary["epoch"]
-
-        return df
-
-    @staticmethod
-    def _fix_file_posix_category(df: pd.DataFrame):
-        base_condition = (df["cat"].str.contains("posix|stdio")) & (~df["file_name"].isna())
-
-        # Step 1: Map file purpose suffixes first
-        purpose_updates = {"/data": "_reader", "/checkpoint": "_checkpoint"}
-
-        for path, suffix in purpose_updates.items():
-            mask = base_condition & df["file_name"].str.contains(path)
-            df.loc[mask, "cat"] = df.loc[mask, "cat"] + suffix
-
-        # Step 2: Map filesystem suffixes
-        filesystem_updates = {"/lustre": "_lustre", "/ssd": "_ssd"}
-
-        for path, suffix in filesystem_updates.items():
-            mask = base_condition & df["file_name"].str.contains(path)
-            df.loc[mask, "cat"] = df.loc[mask, "cat"] + suffix
-
-        return df
-
-    @staticmethod
-    def _sanitize_size_offset(df: pd.DataFrame):
-        df["size"] = df["size"].replace(0, np.nan)
-        if "offset" in df.columns:
-            df["offset"] = df["offset"].replace(0, np.nan)
-        return df
-
-    @staticmethod
-    def _set_epochs(df: pd.DataFrame, epoch_boundaries: pd.DataFrame):
-        df["epoch"] = pd.NA
-
-        # Iterate over each epoch boundary to find matching events
-        for _, epoch_boundary in epoch_boundaries.iterrows():
-            pid = epoch_boundary["pid"]
-            start = epoch_boundary["time_start"]
-            end = epoch_boundary["time_end"]
-
-            # Find rows in the partition that match the pid and fall within the time interval
-            mask = (df["pid"] == pid) & (df["time_start"] >= start) & (df["time_start"] < end)
-
-            # Assign the epoch number to the matching rows
-            df.loc[mask, "epoch"] = epoch_boundary["epoch"]
-
-        return df
 
     @staticmethod
     def _fix_file_posix_category(df: pd.DataFrame):
@@ -561,6 +559,11 @@ class DFTracerAnalyzer(Analyzer):
         traces["te"] = traces["te"].astype("Int64")
         traces["trange"] = traces["trange"].astype("Int16")
         traces["dur"] = traces["dur"] / self.time_resolution
+        logger.debug(
+            "Fixed time columns",
+            time_granularity=self.time_granularity,
+            time_resolution=self.time_resolution,
+        )
         return traces
 
     def _get_columns(self, extra_columns: Optional[Dict[str, str]]):
@@ -589,10 +592,6 @@ class DFTracerAnalyzer(Analyzer):
         return columns
 
     def _handle_metadata(self, raw_traces: dd.DataFrame) -> dd.DataFrame:
-        # print('=' * 33)
-        # print('Handling metadata:\n')
-        # print('>Raw traces:\n')
-        # print(raw_traces)
         is_dask = isinstance(raw_traces, dd.DataFrame)
         traces = raw_traces.query("type == 0")
         file_hashes = raw_traces.query("type == 1")[["name", "hash"]].groupby("hash").first()
@@ -607,10 +606,6 @@ class DFTracerAnalyzer(Analyzer):
             host_hashes = host_hashes.persist()
             string_hashes = string_hashes.persist()
             metadata = metadata.persist()
-        # print('file_hash dtype', traces["file_hash"].dtype)
-        # print('host_hash dtype', traces["host_hash"].dtype)
-        # print('file_hash index dtype', file_hashes.index.dtype)
-        # print('host_hash index dtype', host_hashes.index.dtype)
         traces = traces.merge(
             file_hashes.rename(columns={"name": COL_FILE_NAME}),
             how="left",
@@ -627,9 +622,7 @@ class DFTracerAnalyzer(Analyzer):
         self._host_hashes = host_hashes
         self._string_hashes = string_hashes
         self._metadata = metadata
-        # print('>Traces:\n')
-        # print(traces)
-        # print('=' * 33)
+        logger.debug("Handled metadata")
         return traces
 
     @staticmethod
@@ -637,10 +630,8 @@ class DFTracerAnalyzer(Analyzer):
         return traces.rename(columns=TRACE_COL_MAPPING)
 
     @staticmethod
-    def _sanitize_size_offset(df: pd.DataFrame):
+    def _sanitize_size(df: pd.DataFrame):
         df["size"] = df["size"].replace(0, pd.NA)
-        if "offset" in df.columns:
-            df["offset"] = df["offset"].replace(0, pd.NA)
         return df
 
     @staticmethod
@@ -664,12 +655,7 @@ class DFTracerAnalyzer(Analyzer):
     @staticmethod
     def _set_proc_names(df: pd.DataFrame):
         df[COL_PROC_NAME] = (
-            "app#"
-            + df[COL_HOST_NAME].astype(str).fillna("unknown")
-            + "#"
-            + df["pid"].astype(str)
-            + "#"
-            + df["tid"].astype(str)
+            "app#" + df[COL_HOST_NAME].astype(str) + "#" + df["pid"].astype(str) + "#" + df["tid"].astype(str)
         )
         return df
 

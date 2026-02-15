@@ -20,29 +20,28 @@ TRACE_COL_MAPPING = {
 class DarshanAnalyzer(Analyzer):
     job_time: float = 0.0
 
-    def analyze_trace(
+    def analyze_file(
         self,
-        trace_path,
+        path,
         view_types,
         exclude_characteristics=...,
         extra_columns=None,
         extra_columns_fn=None,
         logical_view_types=False,
         metric_boundaries=...,
-        unoverlapped_posix_only=False,
     ):
-        if not trace_path.endswith('.darshan') and not os.path.isdir(trace_path):
-            raise ValueError(f"Invalid trace path: {trace_path}. Must be a directory or a .darshan file.")
+        if not path.endswith('.darshan') and not os.path.isdir(path):
+            raise ValueError(f"Invalid trace path: {path}. Must be a directory or a .darshan file.")
 
         reports = []
-        if os.path.isdir(trace_path):
-            trace_path = os.path.join(trace_path, '*.darshan')
-            trace_paths = glob.glob(trace_path)
+        if os.path.isdir(path):
+            path = os.path.join(path, '*.darshan')
+            trace_paths = glob.glob(path)
             for trace_path in trace_paths:
                 report = d.DarshanReport(trace_path, read_all=True)
                 reports.append(report)
         else:
-            report = d.DarshanReport(trace_path, read_all=True)
+            report = d.DarshanReport(path, read_all=True)
             reports.append(report)
 
         self.reports = reports
@@ -50,15 +49,14 @@ class DarshanAnalyzer(Analyzer):
 
         if all('DXT_POSIX' in report.records for report in reports):
             # Let the analyzer do read_trace etc as normal
-            return super().analyze_trace(
-                trace_path=trace_path,
-                view_types=view_types,
-                exclude_characteristics=exclude_characteristics,
-                extra_columns=extra_columns,
-                extra_columns_fn=extra_columns_fn,
-                logical_view_types=logical_view_types,
-                metric_boundaries=metric_boundaries,
-                unoverlapped_posix_only=unoverlapped_posix_only,
+            return super().analyze_file(
+                path,
+                view_types,
+                exclude_characteristics,
+                extra_columns,
+                extra_columns_fn,
+                logical_view_types,
+                metric_boundaries,
             )
 
         if any(view_type not in ['file_name', 'proc_name'] for view_type in view_types):
@@ -88,6 +86,7 @@ class DarshanAnalyzer(Analyzer):
 
         return self._analyze_hlm(
             hlm=None,
+            is_dask=True,
             layer_main_views={Layer.POSIX: file_name_view},
             logical_view_types=logical_view_types,
             metric_boundaries=metric_boundaries,

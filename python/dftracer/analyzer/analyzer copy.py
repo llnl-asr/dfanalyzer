@@ -1,5 +1,4 @@
 import abc
-import dask
 import dask.dataframe as dd
 import hashlib
 import itertools as it
@@ -9,13 +8,13 @@ import os
 import pandas as pd
 import structlog
 from betterset import BetterSet as S
+from dask import compute, persist
 from dask.distributed import fire_and_forget, get_client, wait
 from omegaconf import OmegaConf
 from typing import Callable, Dict, List, Optional, Tuple, Union
 
 from .analysis_utils import (
     fix_dtypes,
-    fix_hlm_dtypes,
     fix_std_cols,
     set_file_dir,
     set_file_pattern,
@@ -57,7 +56,6 @@ from .utils.log_utils import console_block, log_block
 from .utils.pandas_agg import unique_set_flatten_pd, unique_set_pd
 from .utils.pandas_utils import flatten_column_names
 from .utils.streaming import Stream, is_streaming_available
-from .streaming.epoch_buffer import EpochBuffer
 
 
 CHECKPOINT_FLAT_VIEW = "_flat_view"
@@ -195,25 +193,10 @@ class Analyzer(abc.ABC):
                         fallback=lambda: None,
                     )
 
-        # Compute high-level metrics
-        is_dask = isinstance(traces, dd.DataFrame)
-        with console_block("Compute high-level metrics"):
-            with log_block("compute_high_level_metrics"):
-                hlm = self.compute_high_level_metrics(
-                    checkpoint_name=hlm_checkpoint_name,
-                    traces=traces,
-                    view_types=view_types,
-                )
-
-            if is_dask:
-                with log_block("persist"):
-                    (hlm, raw_stats) = dask.persist(hlm, raw_stats)
-                with log_block("wait"):
-                    wait([hlm, raw_stats])
-
+<<<<<<< HEAD:dfanalyzer/analyzer.py
         return self._analyze_trace(
             traces=traces,
-            proc_view_types=proc_view_types,
+            view_types=proc_view_types,
             logical_view_types=logical_view_types,
             raw_stats=raw_stats,
             metric_boundaries=metric_boundaries,
@@ -252,85 +235,39 @@ class Analyzer(abc.ABC):
             metric_boundaries=metric_boundaries,
         )
         return analysis_stream
-
-    def analyze_mofka(
-        self,
-        group_file: str,
-        topic_name: str,
-        view_types: List[ViewType],
-        exclude_characteristics: List[str] = [],
-        logical_view_types: bool = False,
-        metric_boundaries: ViewMetricBoundaries = {},
-        epoch_start_name: str = "epoch.start",
-        epoch_end_name: str = "epoch.block",
-        process_key: str = "pid",
-        stop_name: str = "end",
-        extra_columns: Optional[Dict[str, str]] = None,
-        extra_columns_fn: Optional[Callable[[dict], dict]] = None,
-        output_handler: Optional[Callable[[AnalyzerResultType], None]] = None,
-    ) -> None:
-        from .streaming.mofka_io import open_consumer
-
-        proc_view_types = self.ensure_proc_view_type(view_types=view_types)
-        buffer = EpochBuffer(
-            epoch_start_name=epoch_start_name,
-            epoch_end_name=epoch_end_name,
-            process_key=process_key,
-        )
-        output_handler = output_handler or (lambda result: None)
-
-        driver, consumer = open_consumer(group_file, topic_name)
-        logger.debug("Mofka consumer started", topic=topic_name)
-        try:
-            while True:
-                mofka_event = consumer.pull().wait(timeout_ms=-1)
-                if mofka_event is None:
-                    raise RuntimeError("Mofka consumer returned no event")
-                event = mofka_event.metadata
-                if not isinstance(event, dict):
-                    raise ValueError(f"Invalid event metadata type: {type(event)}")
-                logger.debug("mofka.raw_event", name=event.get("name"), ph=event.get("ph"))
-
-                # Remove 'epoch' from extra_columns as it is handled by EpochBuffer
-                normalized_extra_columns = extra_columns.copy() if extra_columns else None
-                if normalized_extra_columns and "epoch" in normalized_extra_columns:
-                    normalized_extra_columns.pop("epoch")
-
-                normalized_event = self.normalize_stream_event(
-                    event=event,
-                    extra_columns=normalized_extra_columns,
-                    extra_columns_fn=extra_columns_fn,
-                )
-                logger.debug("mofka.normalized_event", name=normalized_event.get("name"))
-
-                if normalized_event.get("name") == stop_name:
-                    logger.info("Mofka stop event received", name=stop_name)
-                    break
-
-                epoch_events = buffer.push(normalized_event)
-                if epoch_events:
-                    logger.debug("mofka.epoch_emitted", count=len(epoch_events))
-                if not epoch_events:
-                    continue
-
-                traces = self.handle_stream_events(
-                    events=epoch_events,
-                    view_types=proc_view_types,
-                    extra_columns=extra_columns,
-                )
-                result = self._analyze_trace(
+=======
+        # Compute high-level metrics
+        with console_block("Compute high-level metrics"):
+            with log_block("compute_high_level_metrics"):
+                hlm = self.compute_high_level_metrics(
+                    checkpoint_name=hlm_checkpoint_name,
                     traces=traces,
-                    proc_view_types=proc_view_types,
-                    logical_view_types=logical_view_types,
-                    raw_stats={},
-                    metric_boundaries=metric_boundaries,
+                    view_types=proc_view_types,
                 )
-                logger.debug("mofka.analysis_complete", flat_views=len(result.flat_views))
+            with log_block("persist"):
+                (hlm, raw_stats) = persist(hlm, raw_stats)
+            with log_block("wait"):
+                wait([hlm, raw_stats])
 
-                output_handler(result)
-        finally:
-            del consumer
-            del driver
+        # Validate time granularity
+        # self.validate_time_granularity(hlm=hlm, view_types=hlm_view_types)
+
+        # Analyze HLM
+        result = self._analyze_hlm(
+            hlm=hlm,
+            logical_view_types=logical_view_types,
+            metric_boundaries=metric_boundaries,
+            proc_view_types=proc_view_types,
+            raw_stats=raw_stats,
+        )
+
+        # Attach correct traces & view types
+        result._traces = traces
+        result.view_types = view_types
+
+        # Return result
+        return result
+>>>>>>> main:python/dftracer/analyzer/analyzer.py
 
     def read_stats(self, traces: dd.DataFrame) -> RawStats:
         """Computes and restores raw statistics from the trace data.
@@ -454,23 +391,6 @@ class Analyzer(abc.ABC):
             A Stream with any post-processing applied.
         """
         return trace_stream
-
-    def normalize_stream_event(
-        self,
-        event: dict,
-        extra_columns: Optional[Dict[str, str]] = None,
-        extra_columns_fn: Optional[Callable[[dict], dict]] = None,
-    ) -> dict:
-        return event
-
-    def handle_stream_events(
-        self,
-        events: List[dict],
-        view_types: List[ViewType],
-        extra_columns: Optional[Dict[str, str]] = None,
-    ) -> pd.DataFrame:
-        traces = pd.DataFrame(events)
-        return self.postread_trace(traces=traces, view_types=view_types)
 
     def compute_job_time(self, traces: dd.DataFrame) -> float:
         """Computes the total job execution time from the traces.
@@ -664,7 +584,7 @@ class Analyzer(abc.ABC):
         for view_key in flat_views:
             view_cols = flat_views[view_key].columns
             view_type = view_key[-1]
-            time_layer = self.preset.time_boundary_layer
+            time_layer = self.get_time_boundary_layer()
             time_metric = "time_sum" if self.is_view_process_based(view_key) else "time_max"
             with log_block("calculate_time_boundary", view_key=view_key):
                 if self.time_sliced and view_type == COL_TIME_RANGE:
@@ -772,6 +692,9 @@ class Analyzer(abc.ABC):
 
     def get_stats_checkpoint_name(self):
         return self.get_checkpoint_name(CHECKPOINT_RAW_STATS)
+
+    def get_time_boundary_layer(self):
+        return list(self.preset.layer_defs)[0]
 
     def get_total_event_count(self, traces: dd.DataFrame) -> int:
         """Computes the total number of I/O events in the traces.
@@ -938,10 +861,10 @@ class Analyzer(abc.ABC):
                     continue
                 metric_col = f"{metric}_{col}"
                 hlm[metric_col] = pd.NA
-                if pd.api.types.is_string_dtype(hlm.dtypes[col]) and not is_data_col:
+                if hlm.dtypes[col].name == "object" and not is_data_col:
                     hlm[metric_col] = hlm[metric_col].map(lambda x: S())
                 hlm[metric_col] = hlm[metric_col].mask(hlm.eval(condition), hlm[col])
-                if not pd.api.types.is_string_dtype(hlm.dtypes[col]):
+                if hlm.dtypes[col].name != "object":
                     hlm[metric_col] = pd.to_numeric(hlm[metric_col], errors="coerce")
         return hlm
 
@@ -1031,16 +954,69 @@ class Analyzer(abc.ABC):
 
         return it.chain.from_iterable(map(_iter_permutations, range(len(view_types))))
 
+<<<<<<< HEAD:dfanalyzer/analyzer.py
+    def _analyze_trace(
+        self,
+        traces: DataFrameType,
+        view_types: List[ViewType],
+        logical_view_types: bool,
+        raw_stats: RawStats,
+        metric_boundaries: ViewMetricBoundaries,
+    ):
+        is_dask = isinstance(traces, dd.DataFrame)
+        # print("Is Dask DataFrame:", is_dask)
+
+        hlm_checkpoint_name = self.get_hlm_checkpoint_name(view_types=view_types)
+        # Compute high-level metrics
+        with console_block("Compute high-level metrics"):
+            with log_block("compute_high_level_metrics"):
+                hlm = self.compute_high_level_metrics(
+                    checkpoint_name=hlm_checkpoint_name,
+                    traces=traces,
+                    view_types=view_types,
+                )
+
+            if is_dask:
+                with log_block("persist"):
+                    (hlm, raw_stats) = dask.persist(hlm, raw_stats)
+                with log_block("wait"):
+                    wait([hlm, raw_stats])
+
+=======
     def _analyze_hlm(
         self,
-        hlm: Optional[DataFrameType],
+        hlm: Optional[dd.DataFrame],
         proc_view_types: List[ViewType],
         metric_boundaries: ViewMetricBoundaries,
         raw_stats: RawStats,
         logical_view_types: bool,
-        layer_main_views: Optional[Dict[Layer, DataFrameType]] = None,
-        is_dask: bool = True,
+        layer_main_views: Optional[Dict[Layer, dd.DataFrame]] = None,
     ) -> AnalyzerResultType:
+        """
+        Analyze the high-level metrics (HLM) and compute views for each layer.
+
+        This method computes the main views and additional views for each layer, either from the provided
+        high-level metrics DataFrame (`hlm`) or from precomputed main views (`layer_main_views`). At least
+        one of `hlm` or `layer_main_views` must be provided. If `layer_main_views` is given and contains
+        a main view for a layer, it will be used; otherwise, the main view will be computed from `hlm`.
+
+        Args:
+            hlm (dd.DataFrame): The high-level metrics Dask DataFrame. Required unless all main views are provided
+                in `layer_main_views`.
+            proc_view_types (List[ViewType]): List of view types to process for each layer.
+            metric_boundaries (ViewMetricBoundaries): Boundaries for metrics used in view computation.
+            raw_stats (RawStats): Raw statistics to be computed alongside the views.
+            logical_view_types (bool): Whether to compute logical views in addition to main views.
+            layer_main_views (Optional[Dict[Layer, dd.DataFrame]]): Optional dictionary mapping each layer to its
+                precomputed main view. If not provided, main views will be computed from `hlm`.
+
+        Returns:
+            AnalyzerResultType: The result of the analysis, including computed views and statistics.
+
+        Raises:
+            ValueError: If neither `hlm` nor `layer_main_views` is provided for a required layer.
+        """
+>>>>>>> main:python/dftracer/analyzer/analyzer.py
         # Compute layers & views
         with console_block("Compute views"):
             with log_block("create_layers_and_views_tasks"):
@@ -1050,6 +1026,16 @@ class Analyzer(abc.ABC):
                 views = {}
                 view_keys = set()
                 for layer, layer_condition in self.preset.layer_defs.items():
+<<<<<<< HEAD:dfanalyzer/analyzer.py
+                    layer_hlm = hlm.copy()
+                    if layer_condition:
+                        layer_hlm = hlm.query(layer_condition)
+                    layer_main_view = self.compute_main_view(
+                        layer=layer,
+                        hlm=layer_hlm,
+                        view_types=view_types,
+                    )
+=======
                     layer_hlm = None
                     if layer_main_views is not None and layer in layer_main_views:
                         layer_main_view = layer_main_views[layer]
@@ -1064,18 +1050,27 @@ class Analyzer(abc.ABC):
                             hlm=layer_hlm,
                             view_types=proc_view_types,
                         )
+>>>>>>> main:python/dftracer/analyzer/analyzer.py
                     layer_main_index = layer_main_view.index.to_frame().reset_index(drop=True)
                     layer_views = self.compute_views(
                         layer=layer,
                         main_view=layer_main_view,
+<<<<<<< HEAD:dfanalyzer/analyzer.py
+                        view_types=view_types,
+=======
                         view_types=proc_view_types,
+>>>>>>> main:python/dftracer/analyzer/analyzer.py
                     )
                     if logical_view_types:
                         layer_logical_views = self.compute_logical_views(
                             layer=layer,
                             main_view=layer_main_view,
                             views=layer_views,
+<<<<<<< HEAD:dfanalyzer/analyzer.py
+                            view_types=view_types,
+=======
                             view_types=proc_view_types,
+>>>>>>> main:python/dftracer/analyzer/analyzer.py
                         )
                         layer_views.update(layer_logical_views)
                     hlms[layer] = layer_hlm
@@ -1084,9 +1079,14 @@ class Analyzer(abc.ABC):
                     views[layer] = layer_views
                     view_keys.update(layer_views.keys())
 
+<<<<<<< HEAD:dfanalyzer/analyzer.py
         if is_dask:
             with log_block("compute_views_and_raw_stats"):
                 (views, raw_stats) = dask.compute(views, raw_stats)
+=======
+            with log_block("compute_views_and_raw_stats"):
+                (views, raw_stats) = compute(views, raw_stats)
+>>>>>>> main:python/dftracer/analyzer/analyzer.py
 
         # Restore checkpointed flat views if available
         checkpointed_flat_views = {}
@@ -1116,6 +1116,7 @@ class Analyzer(abc.ABC):
                             flat_views[view_key] = view
                     try:
                         df = flat_views[view_key]
+<<<<<<< HEAD:dfanalyzer/analyzer.py
                         mem_bytes = int(df.memory_usage(deep=True).sum()) if hasattr(df, "memory_usage") else -1
                         logger.debug(
                             "Flat view created",
@@ -1129,24 +1130,44 @@ class Analyzer(abc.ABC):
             # Compute time boundaries for flat views
             with log_block("compute_time_boundaries"):
                 metric_boundaries.update(self.compute_time_boundaries(flat_views))
-                with open("metric_boundaries.json", "w") as f:
-                    json.dump(
-                        metric_boundaries,
-                        f,
-                        cls=NpEncoder,
-                        indent=4,
-                    )
 
             # Process flat views
             with log_block("process_flat_views"):
                 for view_key in flat_views:
-                    # Process flat views to compute metrics and scores
-                    flat_views[view_key] = self._process_flat_view(
-                        flat_view=flat_views[view_key],
-                        view_key=view_key,
-                        metric_boundaries=metric_boundaries,
-                    )
-                    flat_views[view_key].to_csv(f"flat_view_{'_'.join(view_key)}.csv", index=False)
+                    if view_key in checkpointed_flat_views:
+                        continue
+=======
+                        mem_bytes = int(df.memory_usage(deep=True).sum()) if hasattr(df, 'memory_usage') else -1
+                        logger.debug(
+                            "Flat view created",
+                            view_key=view_key,
+                            shape=getattr(df, 'shape', None),
+                            mem_bytes=mem_bytes,
+                        )
+                    except Exception as e:
+                        logger.exception("Failed to log flat view details", exc_info=e)
+
+            # Compute metric boundaries for flat views
+            with log_block("process_flat_views+metric_boundaries"):
+                for view_key in flat_views:
+                    if view_key in checkpointed_flat_views:
+                        continue
+                    view_type = view_key[-1]
+                    top_layer = list(self.preset.layer_defs)[0]
+                    time_suffix = "time_sum" if self.is_view_process_based(view_key) else "time_max"
+                    with log_block("calculate_metric_boundary", view_key=view_key):
+                        time_boundary = flat_views[view_key][f"{top_layer}_{time_suffix}"].sum()
+                        metric_boundaries.setdefault(view_type, {})
+                        for layer in self.preset.layer_defs:
+                            metric_boundaries[view_type][f"{layer}_{time_suffix}"] = time_boundary
+>>>>>>> main:python/dftracer/analyzer/analyzer.py
+                    with log_block("process_flat_view", view_key=view_key):
+                        # Process flat views to compute metrics and scores
+                        flat_views[view_key] = self._process_flat_view(
+                            flat_view=flat_views[view_key],
+                            view_key=view_key,
+                            metric_boundaries=metric_boundaries,
+                        )
 
         # Checkpoint flat views if enabled
         if self.checkpoint:
@@ -1158,60 +1179,35 @@ class Analyzer(abc.ABC):
             with log_block("wait_for_checkpoints"):
                 wait(self.checkpoint_tasks)
 
+<<<<<<< HEAD:dfanalyzer/analyzer.py
+        result = AnalyzerResultType(
+            _hlms=hlms,
+            _main_views=main_views,
+            _metric_boundaries=metric_boundaries,
+            _traces=traces,
+=======
         return AnalyzerResultType(
             _hlms=hlms,
             _main_views=main_views,
             _metric_boundaries=metric_boundaries,
+>>>>>>> main:python/dftracer/analyzer/analyzer.py
             checkpoint_dir=self.checkpoint_dir,
             flat_views=flat_views,
             layers=self.layers,
             raw_stats=raw_stats,
+<<<<<<< HEAD:dfanalyzer/analyzer.py
+            view_types=view_types,
+            views=views,
+        )
+
+        return result
+
+=======
             view_types=proc_view_types,
             views=views,
         )
 
-    def _analyze_trace(
-        self,
-        traces: DataFrameType,
-        proc_view_types: List[ViewType],
-        logical_view_types: bool,
-        raw_stats: RawStats,
-        metric_boundaries: ViewMetricBoundaries,
-    ):
-        is_dask = isinstance(traces, dd.DataFrame)
-        hlm_checkpoint_name = self.get_hlm_checkpoint_name(view_types=proc_view_types)
-
-        # Compute high-level metrics
-        with console_block("Compute high-level metrics"):
-            with log_block("compute_high_level_metrics"):
-                hlm = self.compute_high_level_metrics(
-                    checkpoint_name=hlm_checkpoint_name,
-                    traces=traces,
-                    view_types=proc_view_types,
-                )
-
-            if is_dask:
-                with log_block("persist"):
-                    (hlm, raw_stats) = dask.persist(hlm, raw_stats)
-                with log_block("wait"):
-                    wait([hlm, raw_stats])
-
-                # Analyze HLM
-        result = self._analyze_hlm(
-            hlm=hlm,
-            is_dask=is_dask,
-            logical_view_types=logical_view_types,
-            metric_boundaries=metric_boundaries,
-            proc_view_types=proc_view_types,
-            raw_stats=raw_stats,
-        )
-
-        # Attach correct traces & view types
-        result._traces = traces
-        result.view_types = proc_view_types
-
-        return result
-
+>>>>>>> main:python/dftracer/analyzer/analyzer.py
     def _compute_high_level_metrics(
         self,
         traces: DataFrameType,
@@ -1235,14 +1231,11 @@ class Analyzer(abc.ABC):
                 .persist()
                 .repartition(partition_size=partition_size)
                 .replace(0, pd.NA)
-                .map_partitions(fix_hlm_dtypes)
                 .persist()
             )
         else:
             hlm_agg.update({col: unique_set_pd for col in view_types_diff})
-            hlm = traces.groupby(hlm_groupby).agg(hlm_agg)
-            hlm = hlm.replace(0, pd.NA)
-            hlm = fix_hlm_dtypes(hlm)
+            hlm = traces.groupby(hlm_groupby).agg(hlm_agg).replace(0, pd.NA)
 
         hlm[bin_cols] = hlm[bin_cols].astype("Int32")
 
@@ -1369,10 +1362,7 @@ class Analyzer(abc.ABC):
         with log_block("fix_std_cols", layer=layer, view_key=view_key):
             # Fix std columns to avoid pandas extension dtypes producing object arrays inside Dask.
             std_cols = [col for col, aggs in view_agg.items() if isinstance(aggs, list) and "std" in aggs]
-            if is_dask:
-                records = records.map_partitions(fix_std_cols, std_cols=std_cols)
-            else:
-                records = fix_std_cols(records, std_cols=std_cols)
+            records = records.map_partitions(fix_std_cols, std_cols=std_cols)
 
         with log_block("pre_grouping", layer=layer, view_key=view_key):
             pre_view = records.reset_index()
@@ -1425,7 +1415,7 @@ class Analyzer(abc.ABC):
                 is_view_process_based=is_view_process_based,
                 layers=self.layers,
                 layer_deps=self.preset.layer_deps,
-                time_boundary_layer=self.preset.time_boundary_layer,
+                time_boundary_layer=self.get_time_boundary_layer(),
             )
         with log_block("set_additional_metrics", view_key=view_key):
             flat_view = self._set_additional_metrics(flat_view, is_view_process_based=is_view_process_based)

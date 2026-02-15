@@ -1,0 +1,30 @@
+spack:
+  specs:
+  - mofka
+  - diaspora-stream-api~benchmarks~tests
+  - yaml-cpp
+  - gotcha
+  view: true
+  concretizer:
+    unify: true
+  modules:
+    prefix_inspections:
+      lib: [LD_LIBRARY_PATH]
+      lib64: [LD_LIBRARY_PATH]
+  repos:
+    mochi:
+      git: git@github.com:mochi-hpc/mochi-spack-packages.git
+    diaspora:
+      git: git@github.com:diaspora-project/diaspora-spack-packages.git
+      paths:
+      - spack_repo/diaspora
+  packages:
+    gcc:
+      externals:
+      - spec: gcc@13.3.0 languages:='c,c++,fortran'
+        prefix: /usr
+        extra_attributes:
+          compilers:
+            c: /usr/bin/gcc
+            cxx: /usr/bin/g++
+            fortran: /usr/bin/gfortran

@@ -15,6 +15,7 @@ from .types import (
     ViewKey,
     humanized_view_name,
 )
+from .utils.streaming import Stream, is_streaming_available
 
 
 @dc.dataclass
@@ -44,7 +45,7 @@ class OutputSummary:
     unique_process_count: int
 
 
-class Output(abc.ABC):
+class FileOutput(abc.ABC):
     def __init__(
         self,
         compact: bool = False,
@@ -132,7 +133,7 @@ class Output(abc.ABC):
         )
 
 
-class ConsoleOutput(Output):
+class ConsoleOutput(FileOutput):
     def __init__(
         self,
         compact: bool = False,
@@ -263,12 +264,12 @@ class ConsoleOutput(Output):
         return f"#{int(r * 255):02x}{int(g * 255):02x}{int(b * 255):02x}"
 
 
-class CSVOutput(Output):
+class CSVOutput(FileOutput):
     def handle_result(self, result: AnalyzerResultType):
         raise NotImplementedError("CSVOutput is not implemented yet.")
 
 
-class SQLiteOutput(Output):
+class SQLiteOutput(FileOutput):
     def __init__(
         self,
         compact: bool = False,
@@ -283,3 +284,46 @@ class SQLiteOutput(Output):
 
     def handle_result(self, result: AnalyzerResultType):
         raise NotImplementedError("SQLiteOutput is not implemented yet.")
+
+
+class ZMQOutput:
+    def __init__(self, address: str, bind: Optional[bool] = False):
+        if not is_streaming_available:
+            raise RuntimeError("Streaming is not available")
+        self.address = address
+        self.bind = bind
+
+    def handle_stream(self, stream: Stream) -> None:
+        """
+        Consumes an analysis stream and sinks it to the configured ZMQ address.
+        """
+        print(f"Sinking analysis stream to ZMQ address: {self.address}")
+        stream.to_zmq(self.address, bind=self.bind)
+
+
+class MofkaOutput:
+    def __init__(self, group_file: str, topic_name: str):
+        from .streaming.mofka_io import open_producer
+
+        self.group_file = group_file
+        self.topic_name = topic_name
+
+        self._driver, self._producer = open_producer(group_file, topic_name)
+
+    def handle_result(self, result: AnalyzerResultType):
+        for view_key in result.flat_views:
+            view_type = '_'.join(view_key)
+            flat_view = result.flat_views[view_key]
+            metadata = dict(
+                layers=result.layers,
+                raw_stats=dc.asdict(result.raw_stats),
+                view_len=len(flat_view),
+                view_memory_usage_bytes=int(flat_view.memory_usage(deep=True).sum()),
+                view_type=view_type,
+                view_types=result.view_types,
+            )
+            self._producer.push(
+                metadata=metadata,
+                data=flat_view.to_parquet(),
+            )
+        self._producer.flush()

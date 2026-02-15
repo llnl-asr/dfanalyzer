@@ -73,7 +73,7 @@ jobs:
 
       - name: Install DFAnalyzer
         run: |
-          pip install .[darshan] \
+          pip install .[darshan,streaming] \
             -Csetup-args="--prefix=$HOME/.local" \
             -Csetup-args="-Denable_tests=true" \
             -Csetup-args="-Denable_tools=true"
@@ -116,14 +116,14 @@ jobs:
 
           # Run analysis commands using the external cluster
           if [[ "${{ steps.test_type.outputs.test_type }}" == "full" ]]; then
-            dfanalyzer analyzer=darshan trace_path=tests/data/extracted/darshan-posix-dxt \
-              cluster=external cluster.restart_on_connect=True cluster.scheduler_address=$scheduler_address          
-            dfanalyzer analyzer=recorder trace_path=tests/data/extracted/recorder-posix-parquet \
+            dfanalyzer analyzer=darshan input.path=tests/data/extracted/darshan-posix-dxt \
               cluster=external cluster.restart_on_connect=True cluster.scheduler_address=$scheduler_address
-            dfanalyzer analyzer=dftracer analyzer/preset=dlio trace_path=tests/data/extracted/dftracer-dlio \
+            dfanalyzer analyzer=recorder input.path=tests/data/extracted/recorder-posix-parquet \
+              cluster=external cluster.restart_on_connect=True cluster.scheduler_address=$scheduler_address
+            dfanalyzer analyzer=dftracer analyzer/preset=dlio input.path=tests/data/extracted/dftracer-dlio \
               cluster=external cluster.restart_on_connect=True cluster.scheduler_address=$scheduler_address
           else
-            dfanalyzer analyzer=dftracer analyzer/preset=dlio trace_path=tests/data/extracted/dftracer-dlio \
+            dfanalyzer analyzer=dftracer analyzer/preset=dlio input.path=tests/data/extracted/dftracer-dlio \
               cluster=external cluster.restart_on_connect=False cluster.scheduler_address=$scheduler_address
           fi          
 

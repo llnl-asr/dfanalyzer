@@ -1,17 +1,18 @@
+import glob
 import os
 import pathlib
 import pytest
 import random
 from dask.distributed import LocalCluster
 from dftracer.analyzer import init_with_hydra
-from glob import glob
 
 
 # Full test matrix for comprehensive testing
 full_analyzer_trace_params = [
     ("darshan", "posix", "tests/data/extracted/darshan-posix"),
     ("darshan", "posix", "tests/data/extracted/darshan-posix-dxt"),
-    ("dftracer", "dlio", "tests/data/extracted/dftracer-dlio"),
+    ("dftracer", "dlio", "tests/data/extracted/dftracer-dlio-ai-logging"),
+    ("dftracer", "dlio-pre-ai-logging", "tests/data/extracted/dftracer-dlio"),
     ("dftracer", "posix", "tests/data/extracted/dftracer-posix"),
     ("recorder", "posix", "tests/data/extracted/recorder-posix-parquet"),
 ]
@@ -86,7 +87,7 @@ def _test_e2e(
         f"cluster.scheduler_address={scheduler_address}",
         f"hydra.run.dir={tmp_path}",
         f"hydra.runtime.output_dir={tmp_path}",
-        f"trace_path={trace_path}",
+        f"input.path={trace_path}",
         f"view_types=[{','.join(view_types)}]",
     ]
 
@@ -103,12 +104,12 @@ def _test_e2e(
     assert dfa.hydra_config.analyzer.checkpoint == checkpoint
     assert dfa.hydra_config.analyzer.checkpoint_dir == checkpoint_dir
     assert dfa.hydra_config.analyzer.preset.name == preset
-    assert dfa.hydra_config.trace_path == trace_path
+    assert dfa.hydra_config.input.path == trace_path
     if assign_epochs:
         assert dfa.hydra_config.analyzer.assign_epochs
 
     # Run the main function
-    result = dfa.analyze_trace()
+    result = dfa.analyze_file()
 
     assert len(result.flat_views) == len(dfa.hydra_config.view_types), (
         f"Expected {len(dfa.hydra_config.view_types)} views, got {len(result.flat_views)}"
@@ -117,7 +118,7 @@ def _test_e2e(
         f"Expected {len(dfa.hydra_config.analyzer.preset.layer_defs)} layers, got {len(result.layers)}"
     )
     if checkpoint:
-        assert any(glob(f"{result.checkpoint_dir}/*.parquet")), "No checkpoint found"
+        assert any(glob.glob(f"{result.checkpoint_dir}/*.parquet")), "No checkpoint found"
 
     # Shutdown the Dask client and cluster
     dfa.shutdown()

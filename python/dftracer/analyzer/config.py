@@ -37,6 +37,7 @@ class AnalyzerPresetConfig:
     layer_deps: Optional[Dict[str, Optional[str]]] = dc.field(default_factory=dict)
     logical_views: Optional[Dict[str, Dict[str, Optional[str]]]] = dc.field(default_factory=dict)
     name: str = MISSING
+    time_boundary_layer: str = MISSING
     unscored_metrics: Optional[List[str]] = dc.field(default_factory=list)
 
 
@@ -66,6 +67,7 @@ class AnalyzerPresetConfigPOSIX(AnalyzerPresetConfig):
         }
     )
     name: str = "posix"
+    time_boundary_layer: str = "posix"
 
 
 @dc.dataclass
@@ -173,8 +175,8 @@ class AnalyzerPresetConfigDLIO(AnalyzerPresetConfig):
             },
         }
     )
-    name: str = "dlio"
-    unscored_metrics: Optional[List[str]] = dc.field(default_factory=list)
+    name: str = "dlio-pre-ai-logging"
+    time_boundary_layer: str = "app"
 
 
 @dc.dataclass
@@ -202,11 +204,12 @@ class AnalyzerPresetConfigDLIOAILogging(AnalyzerPresetConfigDLIO):
             # 'other_posix_ssd': 'cat.isin(["posix_ssd", "stdio_ssd"])',
         }
     )
+    name: str = "dlio"
 
 
 @dc.dataclass
 class AnalyzerConfig:
-    checkpoint: Optional[bool] = True
+    checkpoint: Optional[bool] = False
     checkpoint_dir: Optional[str] = "${hydra:run.dir}/checkpoints"
     preset: Optional[AnalyzerPresetConfig] = MISSING
     quantile_stats: Optional[bool] = False
@@ -297,7 +300,36 @@ class SLURMClusterConfig(JobQueueClusterConfig):
 
 
 @dc.dataclass
+class InputConfig:
+    pass
+
+
+@dc.dataclass
+class FileInputConfig(InputConfig):
+    _target_: str = "dftracer.analyzer.input.FileInput"
+    path: str = MISSING
+
+
+@dc.dataclass
+class ZMQInputConfig(InputConfig):
+    _target_: str = "dftracer.analyzer.input.ZMQInput"
+    address: str = MISSING
+
+
+@dc.dataclass
+class MofkaInputConfig(InputConfig):
+    _target_: str = "dftracer.analyzer.input.MofkaInput"
+    group_file: str = MISSING
+    topic_name: str = MISSING
+
+
+@dc.dataclass
 class OutputConfig:
+    pass
+
+
+@dc.dataclass
+class FileOutputConfig(OutputConfig):
     compact: Optional[bool] = False
     name: Optional[str] = ""
     root_only: Optional[bool] = True
@@ -320,6 +352,19 @@ class CSVOutputConfig(OutputConfig):
 class SQLiteOutputConfig(OutputConfig):
     _target_: str = "dftracer.analyzer.output.SQLiteOutput"
     run_db_path: Optional[str] = ""
+
+
+@dc.dataclass
+class ZMQOutputConfig(OutputConfig):
+    _target_: str = "dfanalyzer.output.ZMQOutput"
+    address: str = MISSING
+
+
+@dc.dataclass
+class MofkaOutputConfig(OutputConfig):
+    _target_: str = "dftracer.analyzer.output.MofkaOutput"
+    group_file: str = MISSING
+    topic_name: str = MISSING
 
 
 @dc.dataclass
@@ -365,6 +410,7 @@ class Config:
             {"analyzer/preset": "posix"},
             {"hydra/job": "custom"},
             {"cluster": "local"},
+            {"input": "file"},
             {"output": "console"},
             "_self_",
             {"override hydra/help": "custom"},
@@ -374,13 +420,12 @@ class Config:
     cluster: ClusterConfig = MISSING
     debug: Optional[bool] = False
     exclude_characteristics: Optional[List[str]] = dc.field(default_factory=list)
+    input: InputConfig = MISSING
     logical_view_types: Optional[bool] = False
     metric_boundaries: Optional[ViewMetricBoundaries] = dc.field(default_factory=dict)
     output: OutputConfig = MISSING
-    trace_path: str = MISSING
     verbose: Optional[bool] = False
     view_types: Optional[List[str]] = dc.field(default_factory=lambda: [COL_TIME_RANGE])
-    unoverlapped_posix_only: Optional[bool] = False
 
 
 def init_hydra_config_store() -> ConfigStore:
@@ -392,14 +437,19 @@ def init_hydra_config_store() -> ConfigStore:
     cs.store(group="analyzer", name="dftracer", node=DFTracerAnalyzerConfig)
     cs.store(group="analyzer", name="recorder", node=RecorderAnalyzerConfig)
     cs.store(group="analyzer/preset", name="posix", node=AnalyzerPresetConfigPOSIX)
-    cs.store(group="analyzer/preset", name="dlio-prev", node=AnalyzerPresetConfigDLIO)
+    cs.store(group="analyzer/preset", name="dlio-pre-ai-logging", node=AnalyzerPresetConfigDLIO)
     cs.store(group="analyzer/preset", name="dlio", node=AnalyzerPresetConfigDLIOAILogging)
     cs.store(group="cluster", name="external", node=ExternalClusterConfig)
     cs.store(group="cluster", name="local", node=LocalClusterConfig)
     cs.store(group="cluster", name="lsf", node=LSFClusterConfig)
     cs.store(group="cluster", name="pbs", node=PBSClusterConfig)
     cs.store(group="cluster", name="slurm", node=SLURMClusterConfig)
+    cs.store(group="input", name="file", node=FileInputConfig)
+    cs.store(group="input", name="zmq", node=ZMQInputConfig)
+    cs.store(group="input", name="mofka", node=MofkaInputConfig)
     cs.store(group="output", name="console", node=ConsoleOutputConfig)
     cs.store(group="output", name="csv", node=CSVOutputConfig)
     cs.store(group="output", name="sqlite", node=SQLiteOutputConfig)
+    cs.store(group="output", name="zmq", node=ZMQOutputConfig)
+    cs.store(group="output", name="mofka", node=MofkaOutputConfig)
     return cs

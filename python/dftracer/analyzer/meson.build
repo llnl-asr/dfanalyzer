@@ -11,6 +11,7 @@ py.install_sources(
         'constants.py',
         'darshan.py',
         'dftracer.py',
+        'input.py',
         'metrics.py',
         'output.py',
         'recorder.py',
@@ -19,4 +20,5 @@ py.install_sources(
     subdir: 'dftracer/analyzer',
 )
 
+subdir('streaming')
 subdir('utils')

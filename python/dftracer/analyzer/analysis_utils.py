@@ -48,6 +48,16 @@ def fix_dtypes(df: pd.DataFrame, time_sliced: bool = False):
     return df
 
 
+def fix_hlm_dtypes(df: pd.DataFrame, time_sliced: bool = False):
+    df["time"] = pd.to_numeric(df["time"], errors="coerce").astype("Float64")
+    df["size"] = pd.to_numeric(df["size"], errors="coerce").astype("Int64")
+    if time_sliced:
+        df["count"] = pd.to_numeric(df["count"], errors="coerce").astype("Float64")
+    else:
+        df["count"] = pd.to_numeric(df["count"], errors="coerce").astype("Int64")
+    return df
+
+
 def fix_size_values(df: pd.DataFrame):
     size_cols = [col for col in df.columns if 'size' in col]
     df[size_cols] = df[size_cols].replace(0, pd.NA)

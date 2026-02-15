@@ -43,6 +43,7 @@ dependencies = [
 
 [project.optional-dependencies]
 darshan = ["darshan>=3.4"]
+streaming = ["pyzmq>=27.0.0", "streamz>=0.6.4", "streamz-zmq>=0.1.4"]
 
 [project.scripts]
 dfanalyzer = "dftracer.analyzer.__main__:main"
@@ -74,9 +75,9 @@ line-length = 119
 [tool.ruff.format]
 quote-style = "preserve"
 
-[tool.spin]
-package = 'dftracer.analyzer'
-
 [tool.setuptools_scm]
 local_scheme = "no-local-version"
 version_file = "python/dftracer/analyzer/_version.py"
+
+[tool.spin]
+package = 'dftracer.analyzer'
