@@ -10,6 +10,7 @@ py.install_sources(
         'config.py',
         'constants.py',
         'darshan.py',
+        'datacrumbs.py',
         'dftracer.py',
         'metrics.py',
         'output.py',

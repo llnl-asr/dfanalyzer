@@ -226,6 +226,25 @@ class AnalyzerPresetConfigDLIOAILogging(AnalyzerPresetConfigDLIO):
         }
     )
 
+@dc.dataclass
+class AnalyzerPresetConfigDynamic(AnalyzerPresetConfig):
+    layer_defs: Dict[str, Optional[str]] = dc.field(
+        default_factory=lambda: {
+            'dynamic': None,
+        }
+    )
+    name: str = "dynamic"
+
+
+@dc.dataclass
+class AnalyzerPresetConfigStack(AnalyzerPresetConfig):
+    layer_defs: Dict[str, Optional[str]] = dc.field(
+        default_factory=lambda: {
+            'stack': None,
+        }
+    )
+    name: str = "stack"
+
 
 @dc.dataclass
 class AnalyzerConfig:
@@ -245,6 +264,11 @@ class DarshanAnalyzerConfig(AnalyzerConfig):
     time_granularity: Optional[float] = 1
     time_resolution: Optional[float] = 1e3
 
+@dc.dataclass
+class DataCrumbsAnalyzerConfig(AnalyzerConfig):
+    _target_: str = "dftracer.analyzer.datacrumbs.DataCrumbsAnalyzer"
+    time_granularity: Optional[float] = 1
+    time_resolution: Optional[float] = 1e6
 
 @dc.dataclass
 class DFTracerAnalyzerConfig(AnalyzerConfig):
@@ -412,11 +436,14 @@ def init_hydra_config_store() -> ConfigStore:
     cs.store(group="hydra/job", name="custom", node=CustomJobConfig)
     cs.store(name="config", node=Config)
     cs.store(group="analyzer", name="darshan", node=DarshanAnalyzerConfig)
+    cs.store(group="analyzer", name="datacrumbs", node=DataCrumbsAnalyzerConfig)
     cs.store(group="analyzer", name="dftracer", node=DFTracerAnalyzerConfig)
     cs.store(group="analyzer", name="recorder", node=RecorderAnalyzerConfig)
-    cs.store(group="analyzer/preset", name="posix", node=AnalyzerPresetConfigPOSIX)
-    cs.store(group="analyzer/preset", name="dlio-prev", node=AnalyzerPresetConfigDLIO)
     cs.store(group="analyzer/preset", name="dlio", node=AnalyzerPresetConfigDLIOAILogging)
+    cs.store(group="analyzer/preset", name="dlio-old", node=AnalyzerPresetConfigDLIO)
+    cs.store(group="analyzer/preset", name="dynamic", node=AnalyzerPresetConfigDynamic)
+    cs.store(group="analyzer/preset", name="posix", node=AnalyzerPresetConfigPOSIX)
+    cs.store(group="analyzer/preset", name="stack", node=AnalyzerPresetConfigStack)
     cs.store(group="cluster", name="external", node=ExternalClusterConfig)
     cs.store(group="cluster", name="local", node=LocalClusterConfig)
     cs.store(group="cluster", name="lsf", node=LSFClusterConfig)

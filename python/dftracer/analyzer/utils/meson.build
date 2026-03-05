@@ -12,6 +12,7 @@ py.install_sources(
         'json_encoders.py',
         'log_utils.py',
         'notebook_utils.py',
+        'stack_utils.py',
         'warning_utils.py',
     ],
     subdir: 'dftracer/analyzer/utils',
