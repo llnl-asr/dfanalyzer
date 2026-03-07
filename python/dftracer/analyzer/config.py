@@ -285,8 +285,9 @@ class JobQueueClusterConfig(ClusterConfig):
     death_timeout: Optional[int] = 60
     job_directives_skip: Optional[List[str]] = dc.field(default_factory=list)
     job_extra_directives: Optional[List[str]] = dc.field(default_factory=list)
-    log_directory: Optional[str] = ""
+    log_directory: Optional[str] = None
     memory: Optional[str] = None
+    n_workers: int = 0
     processes: Optional[int] = 1  # nnodes
     scheduler_options: Optional[JobQueueClusterSchedulerConfig] = dc.field(
         default_factory=JobQueueClusterSchedulerConfig
@@ -317,6 +318,16 @@ class PBSClusterConfig(JobQueueClusterConfig):
 @dc.dataclass
 class SLURMClusterConfig(JobQueueClusterConfig):
     _target_: str = "dask_jobqueue.SLURMCluster"
+
+
+@dc.dataclass
+class FluxClusterConfig(JobQueueClusterConfig):
+    _target_: str = "dask_jobqueue.FluxCluster"
+    account: Optional[str] = None
+    job_cpu: Optional[int] = None
+    job_nodes: Optional[int] = 1
+    queue: Optional[str] = None
+    walltime: Optional[str] = "30m"
 
 
 @dc.dataclass

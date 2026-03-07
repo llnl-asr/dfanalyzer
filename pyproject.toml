@@ -28,7 +28,7 @@ classifiers = [
 dependencies = [
     "betterset>=0.2.0",
     "dask[bag,dataframe,distributed]>=2024.1.0,<2025",
-    "dask_jobqueue>=0.8.0",
+    "dask_jobqueue @ git+https://github.com/izzet/dask-jobqueue@feature/flux-cluster",
     "hydra-core~=1.3.0",
     "inflect==7.0",
     "numpy>=2.0.0",

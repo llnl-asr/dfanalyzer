@@ -1,6 +1,6 @@
 import hydra
 import signal
-from dask_jobqueue import LSFCluster, PBSCluster, SLURMCluster
+from dask_jobqueue import FluxCluster, LSFCluster, PBSCluster, SLURMCluster
 from dataclasses import asdict, dataclass, field
 from distributed import LocalCluster
 from hydra.core.config_store import ConfigStore
@@ -12,6 +12,7 @@ from .config import (
     ClusterConfig,
     CustomHelpConfig,
     CustomJobConfig,
+    FluxClusterConfig,
     LocalClusterConfig,
     LSFClusterConfig,
     PBSClusterConfig,
@@ -49,9 +50,16 @@ cs.store(group="cluster", name="local", node=LocalClusterConfig)
 cs.store(group="cluster", name="lsf", node=LSFClusterConfig)
 cs.store(group="cluster", name="pbs", node=PBSClusterConfig)
 cs.store(group="cluster", name="slurm", node=SLURMClusterConfig)
+cs.store(group="cluster", name="flux", node=FluxClusterConfig)
 
-
-ClusterType = Union[ExternalCluster, LocalCluster, LSFCluster, PBSCluster, SLURMCluster]
+ClusterType = Union[
+    ExternalCluster,
+    FluxCluster,
+    LocalCluster,
+    LSFCluster,
+    PBSCluster,
+    SLURMCluster,
+]
 
 
 @hydra.main(version_base=None, config_name="config")
