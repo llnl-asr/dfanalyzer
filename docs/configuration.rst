@@ -311,3 +311,103 @@ For environments using the LSF workload manager.
 
 PBS Cluster (``cluster=pbs``)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Flux Cluster (``cluster=flux``)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+For environments using the Flux workload manager.
+
+.. list-table::
+   :widths: 25 15 15 45
+   :header-rows: 1
+
+   * - Parameter
+     - Type
+     - Default
+     - Description
+   * - ``cluster.n_workers``
+     - int
+     - 0
+     - Number of submitted Flux jobs to start when the cluster is created.
+   * - ``cluster.cores``
+     - int
+     - 16
+     - Total CPU cores assigned to each submitted job.
+   * - ``cluster.processes``
+     - int
+     - 1
+     - Number of Dask worker processes launched inside each submitted job.
+   * - ``cluster.memory``
+     - string
+     - null
+     - Total memory assigned to each submitted job (for example, ``"24GB"``).
+   * - ``cluster.job_nodes``
+     - int
+     - 1
+     - Number of nodes requested per submitted Flux job.
+   * - ``cluster.job_cpu``
+     - int
+     - null
+     - Flux CPUs per slot (``flux batch -c``). When unset, DFAnalyzer derives a value from the worker layout.
+   * - ``cluster.walltime``
+     - string
+     - ``"30m"``
+     - Walltime for each submitted job. Both Flux-style values like ``30m`` and ``1h`` and ``HH:MM:SS`` values like ``00:10:00`` are accepted.
+   * - ``cluster.queue``
+     - string
+     - null
+     - Flux queue or partition name, such as ``pdebug``.
+   * - ``cluster.account``
+     - string
+     - null
+     - Optional Flux bank or account name.
+   * - ``cluster.job_extra_directives``
+     - list[str]
+     - []
+     - Additional Flux batch directives appended to the generated job script.
+
+A common production workflow is to start a scheduler with ``dfanalyzer-cluster`` and then connect the analysis process to it with ``cluster=external``:
+
+.. code-block:: bash
+
+   dfanalyzer-cluster \
+     cluster=flux \
+     cluster.n_workers=1 \
+     cluster.cores=2 \
+     cluster.memory=4GB \
+     cluster.processes=1 \
+     cluster.walltime=00:10:00 \
+     cluster.queue=pdebug
+
+The command prints a scheduler address such as ``tcp://host:port``. Use that address to run DFAnalyzer separately:
+
+.. code-block:: bash
+
+   dfanalyzer \
+     cluster=external \
+     cluster.scheduler_address=tcp://host:port \
+     analyzer=dftracer \
+     analyzer/preset=dlio \
+     trace_path=tests/data/extracted/dftracer-ai-logging
+
+The same approach can be used from Python:
+
+.. code-block:: python
+
+   from dftracer.analyzer import init_with_hydra
+
+   scheduler_address = "tcp://host:port"
+   dfa = init_with_hydra(
+       hydra_overrides=[
+           "cluster=external",
+           f"cluster.scheduler_address={scheduler_address}",
+           "analyzer=dftracer",
+           "analyzer/preset=dlio",
+           "trace_path=tests/data/extracted/dftracer-ai-logging",
+       ]
+   )
+   result = dfa.analyze_trace()
+   dfa.output.handle_result(result)
+   dfa.shutdown()
+
+For first-time validation, start with a single submitted job on one node and confirm that at least one worker joins the scheduler before scaling up.
