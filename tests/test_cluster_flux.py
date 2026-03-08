@@ -1,6 +1,14 @@
+import socket
 from hydra.utils import instantiate
 
-from dftracer.analyzer.config import FluxClusterConfig
+from dftracer.analyzer.config import FluxClusterConfig, _default_cluster_scheduler_host
+
+
+def test_default_cluster_scheduler_host_uses_resolved_ip(monkeypatch):
+    monkeypatch.setattr(socket, "gethostname", lambda: "cluster-login")
+    monkeypatch.setattr(socket, "gethostbyname", lambda host: "192.168.192.100")
+
+    assert _default_cluster_scheduler_host() == "192.168.192.100"
 
 
 def test_flux_cluster_job_script_uses_flux_queue_and_run_wrapper(tmp_path):

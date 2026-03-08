@@ -29,6 +29,10 @@ DERIVED_POSIX_SIZE_METRICS = ('data', 'read', 'write')
 HASH_CHECKPOINT_NAMES = get_bool_env_var("DFANALYZER_HASH_CHECKPOINT_NAMES", False)
 
 
+def _default_cluster_scheduler_host() -> str:
+    return socket.gethostbyname(socket.gethostname())
+
+
 @dc.dataclass
 class AnalyzerPresetConfig:
     additional_metrics: Optional[Dict[str, Dict[str, str]]] = dc.field(default_factory=dict)
@@ -276,7 +280,7 @@ class ExternalClusterConfig(ClusterConfig):
 @dc.dataclass
 class JobQueueClusterSchedulerConfig:
     dashboard_address: Optional[str] = None
-    host: Optional[str] = dc.field(default_factory=socket.gethostname)
+    host: Optional[str] = dc.field(default_factory=_default_cluster_scheduler_host)
 
 
 @dc.dataclass
