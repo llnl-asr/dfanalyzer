@@ -8,10 +8,11 @@ import math
 import numpy as np
 import os
 import pandas as pd
+import re
 import structlog
 from dask import compute, persist
 from dask.distributed import fire_and_forget, get_client, wait
-from omegaconf import OmegaConf
+from omegaconf import OmegaConf, open_dict
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 from .analysis_utils import (
@@ -189,6 +190,76 @@ class Analyzer(abc.ABC):
         output_flat_views = flat_views if self.facts_config.emit_flat_views else {}
         return output_flat_views, analysis_facts
 
+    @staticmethod
+    def _category_layer_key(cat: str, taken: set) -> str:
+        key = re.sub(r"[^a-z0-9_]+", "_", cat.lower()).strip("_") or "cat"
+        if key == "app":
+            key = "app_cat"
+        base, i = key, 1
+        while key in taken:
+            i += 1
+            key = f"{base}_{i}"
+        taken.add(key)
+        return key
+
+    @staticmethod
+    def _normalize_cats(values) -> List[str]:
+        cats = {str(c).lower() for c in values if c is not None and str(c) != ""}
+        return sorted(cats - {"dftracer"})
+
+    @classmethod
+    def _category_layers_from_cats(cls, cats: List[str]):
+        """Build nested layers from ``cat`` values. pydftracer supports dotted
+        categories (``ai.data.io``), so each dotted prefix becomes a parent layer
+        that also matches its descendants."""
+        nodes = set()
+        for cat in cats:
+            parts = cat.split(".")
+            for i in range(1, len(parts) + 1):
+                nodes.add(".".join(parts[:i]))
+        nodes = sorted(nodes)
+
+        taken: set = set()
+        key_of = {node: cls._category_layer_key(node, taken) for node in nodes}
+
+        layer_defs: Dict[str, Optional[str]] = {"app": None}
+        layer_deps: Dict[str, Optional[str]] = {"app": None}
+        derived_metrics: Dict[str, Dict[str, str]] = {"app": {}}
+        size_layers: List[str] = []
+        for node in nodes:
+            key = key_of[node]
+            if any(other.startswith(f"{node}.") for other in nodes):
+                layer_defs[key] = f'cat == "{node}" or cat.str.startswith("{node}.")'
+            else:
+                layer_defs[key] = f'cat == "{node}"'
+            parent = node.rsplit(".", 1)[0] if "." in node else None
+            layer_deps[key] = key_of[parent] if parent else "app"
+            derived_metrics[key] = {}
+            if "posix" in node or "stdio" in node:
+                size_layers.append(key)
+        return layer_defs, layer_deps, derived_metrics, size_layers
+
+    def _build_category_layers(self, traces: dd.DataFrame) -> None:
+        """Rebuild the preset as an ``app`` boundary layer plus nested layers per
+        distinct ``cat`` in the trace. No-op if no categories are found."""
+        if "cat" not in traces.columns:
+            return
+        cats = traces["cat"].dropna().unique()
+        cats = self._normalize_cats(cats.compute() if hasattr(cats, "compute") else cats)
+        if not cats:
+            return
+
+        layer_defs, layer_deps, derived_metrics, size_layers = self._category_layers_from_cats(cats)
+
+        with open_dict(self.preset):
+            self.preset.layer_defs = layer_defs
+            self.preset.layer_deps = layer_deps
+            self.preset.derived_metrics = derived_metrics
+            self.preset.size_layers = size_layers
+            self.preset.size_derived_metrics = {}
+        self.layers = list(layer_defs.keys())
+        logger.info("Built category layers", layers=self.layers)
+
     def analyze_trace(
         self,
         trace_path: str,
@@ -243,6 +314,9 @@ class Analyzer(abc.ABC):
                 raw_stats = self.read_stats(traces=traces, profiles=profiles)
             with log_block("postread_trace"):
                 traces = self.postread_trace(traces=traces, view_types=proc_view_types)
+            if getattr(self.preset, "auto_layers_by_category", False):
+                with log_block("build_category_layers"):
+                    self._build_category_layers(traces=traces)
             with log_block("set_size_bins"):
                 traces = traces.map_partitions(set_size_bins)
             if self.time_sliced:

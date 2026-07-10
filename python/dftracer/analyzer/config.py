@@ -33,6 +33,8 @@ HASH_CHECKPOINT_NAMES = get_bool_env_var("DFANALYZER_HASH_CHECKPOINT_NAMES", Fal
 class AnalyzerPresetConfig:
     additional_metrics: Optional[Dict[str, Dict[str, str]]] = dc.field(default_factory=dict)
     async_layers: Optional[List[str]] = dc.field(default_factory=list)
+    # Discover distinct `cat` values at runtime and build one layer per category.
+    auto_layers_by_category: Optional[bool] = False
     derived_metrics: Optional[Dict[str, Dict[str, str]]] = dc.field(default_factory=dict)
     layer_defs: Dict[str, Optional[str]] = MISSING
     layer_deps: Optional[Dict[str, Optional[str]]] = dc.field(default_factory=dict)
@@ -75,6 +77,34 @@ class AnalyzerPresetConfigPOSIX(AnalyzerPresetConfig):
         }
     )
     size_layers: Optional[List[str]] = dc.field(default_factory=lambda: ['posix'])
+
+
+@dc.dataclass
+class AnalyzerPresetConfigGeneric(AnalyzerPresetConfig):
+    """Catch-all preset: an ``app`` boundary layer plus one auto-discovered
+    layer per distinct ``cat`` in the trace. Scored on operations/second."""
+
+    auto_layers_by_category: Optional[bool] = True
+    derived_metrics: Optional[Dict[str, Dict[str, str]]] = dc.field(
+        default_factory=lambda: {'app': {}}
+    )
+    # None => match every event (fallback when no categories are found).
+    layer_defs: Dict[str, Optional[str]] = dc.field(
+        default_factory=lambda: {'app': None}
+    )
+    layer_deps: Optional[Dict[str, Optional[str]]] = dc.field(
+        default_factory=lambda: {'app': None}
+    )
+    logical_views: Optional[Dict[str, Dict[str, Optional[str]]]] = dc.field(
+        default_factory=lambda: {
+            'proc_name': {
+                'host_name': 'proc_name.str.split("#").str[1]',
+                'proc_id': 'proc_name.str.split("#").str[2]',
+                'thread_id': 'proc_name.str.split("#").str[3]',
+            },
+        }
+    )
+    name: str = "generic"
 
 
 @dc.dataclass
@@ -492,6 +522,7 @@ def init_hydra_config_store() -> ConfigStore:
     cs.store(group="analyzer", name="dftracer", node=DFTracerAnalyzerConfig)
     cs.store(group="analyzer", name="recorder", node=RecorderAnalyzerConfig)
     cs.store(group="analyzer/preset", name="posix", node=AnalyzerPresetConfigPOSIX)
+    cs.store(group="analyzer/preset", name="generic", node=AnalyzerPresetConfigGeneric)
     cs.store(group="analyzer/preset", name="dlio-prev", node=AnalyzerPresetConfigDLIO)
     cs.store(group="analyzer/preset", name="dlio", node=AnalyzerPresetConfigDLIOAILogging)
     cs.store(group="cluster", name="external", node=ExternalClusterConfig)

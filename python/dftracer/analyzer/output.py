@@ -136,17 +136,7 @@ class Output(abc.ABC):
         return summary
 
     def _humanized_layer_name(self, name: str) -> str:
-        if name in HUMANIZED_LAYERS:
-            return HUMANIZED_LAYERS[name]
-        return (
-            name.replace('_', ' ')
-            .title()
-            .replace('Posix', 'POSIX')
-            .replace('Stdio', 'STDIO')
-            .replace('Gpfs', '(GPFS)')
-            .replace('Lustre', '(Lustre)')
-            .replace('Ssd', '(SSD)')
-        )
+        return HUMANIZED_LAYERS.get(name, name)
 
     @staticmethod
     def _additional_metric_scale_and_unit(metric: str):
