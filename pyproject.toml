@@ -38,7 +38,7 @@ dependencies = [
     "rich~=14.1.0",
     "strenum>=0.4",
     "structlog>=25",
-    "dftracer-utils>=0.0.10",
+    "dftracer-utils>=0.0.12",
 ]
 
 [project.optional-dependencies]
