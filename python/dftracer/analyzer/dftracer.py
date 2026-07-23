@@ -274,11 +274,16 @@ class DFTracerAnalyzer(Analyzer):
             transient=True,
         ) as _bar:
             _task = _bar.add_task("Indexing", total=None)
+            _phase = {"cur": "Indexing"}
 
             def _on_progress(done: int, total: int, phase: str) -> None:
-                # One bar; the description tracks the current phase (Indexing,
-                # Ingesting SSTs, Building summaries). total 0 -> pulsing.
-                _bar.update(_task, description=phase, completed=done, total=(total or None))
+                # One bar per phase (Indexing, Ingesting SSTs, ...). reset() on a
+                # phase change so total 0 pulses instead of keeping the previous
+                # phase's total (which looked frozen at e.g. 0/2905).
+                if phase != _phase["cur"]:
+                    _phase["cur"] = phase
+                    _bar.reset(_task, total=(total or None), description=phase)
+                _bar.update(_task, completed=done, total=(total or None), description=phase)
 
             ensure_index(
                 trace_path,
