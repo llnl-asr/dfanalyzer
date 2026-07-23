@@ -346,7 +346,11 @@ class RecorderAnalyzerConfig(AnalyzerConfig):
 
 @dc.dataclass
 class ClusterConfig:
-    local_directory: Optional[str] = "/tmp/${hydra:job.name}-${oc.env:USER}/${oc.select:hydra.job.id,0}"
+    local_directory: Optional[str] = (
+        "${oc.env:DFTRACER_DASK_LOCAL_DIR,${oc.env:TMPDIR,/tmp}}"
+        "/${oc.select:hydra.job.name,dftracer}-${oc.env:USER,anon}"
+        "/${oc.select:hydra.job.id,0}"
+    )
 
 
 @dc.dataclass
