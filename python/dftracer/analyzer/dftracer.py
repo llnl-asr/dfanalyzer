@@ -248,7 +248,36 @@ class DFTracerAnalyzer(Analyzer):
 
     def analyze_trace(self, trace_path, *args, **kwargs):
         """Transparent indexing: ensure the dftracer index exists, then analyze."""
-        ensure_index(trace_path, self.trace_groups, self.time_granularity * 1000.0)
+        from rich.progress import (
+            BarColumn,
+            MofNCompleteColumn,
+            Progress,
+            TextColumn,
+            TimeElapsedColumn,
+        )
+
+        from .utils.log_utils import console
+
+        with Progress(
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            MofNCompleteColumn(),
+            TextColumn("files"),
+            TimeElapsedColumn(),
+            console=console,
+            transient=True,
+        ) as _bar:
+            _task = _bar.add_task("Indexing", total=None)
+
+            def _on_progress(done: int, total: int) -> None:
+                _bar.update(_task, completed=done, total=total)
+
+            ensure_index(
+                trace_path,
+                self.trace_groups,
+                self.time_granularity * 1000.0,
+                progress=_on_progress,
+            )
         self._view_types = kwargs.get("view_types") or (args[0] if args else None)
         return super().analyze_trace(trace_path, *args, **kwargs)
 
