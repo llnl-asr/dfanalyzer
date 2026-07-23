@@ -270,7 +270,14 @@ class DFTracerAnalyzer(Analyzer):
             _task = _bar.add_task("Indexing", total=None)
 
             def _on_progress(done: int, total: int) -> None:
-                _bar.update(_task, completed=done, total=total)
+                if total and done >= total:
+                    # Parse is done but ingest + summaries still run inside
+                    # ensure_index; pulse so the bar is not a frozen-full bar.
+                    _bar.update(_task, description="Finalizing index", total=None)
+                else:
+                    _bar.update(
+                        _task, description="Indexing", completed=done, total=total
+                    )
 
             ensure_index(
                 trace_path,
