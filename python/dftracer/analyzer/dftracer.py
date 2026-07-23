@@ -248,6 +248,8 @@ class DFTracerAnalyzer(Analyzer):
 
     def analyze_trace(self, trace_path, *args, **kwargs):
         """Transparent indexing: ensure the dftracer index exists, then analyze."""
+        import time
+
         from rich.progress import (
             BarColumn,
             MofNCompleteColumn,
@@ -258,26 +260,23 @@ class DFTracerAnalyzer(Analyzer):
 
         from .utils.log_utils import console
 
+        t0 = time.time()
         with Progress(
             TextColumn("[progress.description]{task.description}"),
             BarColumn(),
             MofNCompleteColumn(),
-            TextColumn("files"),
             TimeElapsedColumn(),
             console=console,
             transient=True,
         ) as _bar:
             _task = _bar.add_task("Indexing", total=None)
 
-            def _on_progress(done: int, total: int) -> None:
-                if total and done >= total:
-                    # Parse is done but ingest + summaries still run inside
-                    # ensure_index; pulse so the bar is not a frozen-full bar.
-                    _bar.update(_task, description="Finalizing index", total=None)
-                else:
-                    _bar.update(
-                        _task, description="Indexing", completed=done, total=total
-                    )
+            def _on_progress(done: int, total: int, phase: str) -> None:
+                # One bar; the description tracks the current phase (Indexing,
+                # Ingesting SSTs, Building summaries). total 0 -> pulsing.
+                _bar.update(
+                    _task, description=phase, completed=done, total=(total or None)
+                )
 
             ensure_index(
                 trace_path,
@@ -285,6 +284,7 @@ class DFTracerAnalyzer(Analyzer):
                 self.time_granularity * 1000.0,
                 progress=_on_progress,
             )
+        console.print(f"[green]✓[/green] Build index [i]({time.time() - t0:.3f}s)[/i]")
         self._view_types = kwargs.get("view_types") or (args[0] if args else None)
         return super().analyze_trace(trace_path, *args, **kwargs)
 
