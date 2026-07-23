@@ -23,12 +23,16 @@ from dftracer.utils.dfanalyzer import (
     partial_arrow_view_groupby,
     resolve_trace_inputs,
     scan_to_ipc,
+    hlm_scan_group_by,
+    dfanalyzer_events_meta,
+    count_index_hashes,
 )
 from dftracer.utils.dask import _assign_files_by_pid, register_auto_thread_plugin
 from dask.distributed import Client, get_client, wait
 from typing import Dict, List, Optional, Tuple
 
 from .analyzer import Analyzer, HLM_AGG, HLM_EXTRA_COLS
+from .constants import VIEW_TYPES as _DEFAULT_VIEW_TYPES
 from .analysis_utils import (
     build_view_rename_map,
     derive_call_stats,
@@ -245,6 +249,7 @@ class DFTracerAnalyzer(Analyzer):
     def analyze_trace(self, trace_path, *args, **kwargs):
         """Transparent indexing: ensure the dftracer index exists, then analyze."""
         ensure_index(trace_path, self.trace_groups, self.time_granularity * 1000.0)
+        self._view_types = kwargs.get("view_types") or (args[0] if args else None)
         return super().analyze_trace(trace_path, *args, **kwargs)
 
     def read_trace_local(self, trace_path, extra_columns=None, extra_columns_fn=None):
@@ -278,8 +283,9 @@ class DFTracerAnalyzer(Analyzer):
                 files=files if files else None,
                 index_dir=os.path.dirname(index_path),
                 require_checkpoint=True,
-                require_bloom=True,
-                require_manifest=True,
+                require_bloom=False,
+                build_bloom=False,
+                require_manifest=False,
                 require_aggregation=AggregationConfig(
                     time_interval_ms=time_interval_ms,
                     compute_percentiles=False,
@@ -409,8 +415,9 @@ class DFTracerAnalyzer(Analyzer):
                 files=files,
                 index_dir=os.path.dirname(index_path),
                 require_checkpoint=True,
-                require_bloom=True,
-                require_manifest=True,
+                require_bloom=False,
+                build_bloom=False,
+                require_manifest=False,
                 require_aggregation=AggregationConfig(
                     time_interval_ms=time_interval_ms,
                     compute_percentiles=False,
@@ -472,13 +479,21 @@ class DFTracerAnalyzer(Analyzer):
                     pid_conditions = " or ".join(f"pid == {pid}" for pid in sorted(pids))
                     query = f"({pid_conditions})"
                 worker_addr = worker_list[worker_id % len(worker_list)] if worker_list else None
+                num_shards = 4096
+                n_parts = max(1, len(worker_file_ids))
+                span = (num_shards + n_parts - 1) // n_parts
+                shard_begin = min(num_shards, worker_id * span)
+                shard_end = min(num_shards, shard_begin + span)
                 future = dask_client.submit(
                     scan_to_ipc,
                     wfiles,
                     index_path,
                     self.time_granularity,
                     self.time_resolution,
-                    query,
+                    None,
+                    self._scan_group_by(),
+                    shard_begin,
+                    shard_end,
                     workers=[worker_addr] if worker_addr else None,
                     pure=False,
                 )
@@ -492,33 +507,7 @@ class DFTracerAnalyzer(Analyzer):
             self._time_origin = distributed_time_origin(event_futures, dask_client)
 
         with log_block("build_dask_dataframe"):
-            events_meta = pd.DataFrame(
-                {
-                    "cat": pd.Series(dtype="object"),
-                    COL_FUNC_NAME: pd.Series(dtype="object"),
-                    "pid": pd.Series(dtype="int64"),
-                    "tid": pd.Series(dtype="int64"),
-                    "file_hash": pd.Series(dtype="object"),
-                    "host_hash": pd.Series(dtype="object"),
-                    COL_FILE_NAME: pd.Series(dtype="object"),
-                    COL_HOST_NAME: pd.Series(dtype="object"),
-                    COL_PROC_NAME: pd.Series(dtype="object"),
-                    COL_IO_CAT: pd.Series(dtype="int64"),
-                    COL_ACC_PAT: pd.Series(dtype="int64"),
-                    COL_COUNT: pd.Series(dtype="int64"),
-                    COL_TIME: pd.Series(dtype="float64"),
-                    COL_SIZE: pd.Series(dtype="int64"),
-                    "time_min": pd.Series(dtype="float64"),
-                    "time_max": pd.Series(dtype="float64"),
-                    "size_min": pd.Series(dtype="int64"),
-                    "size_max": pd.Series(dtype="int64"),
-                    "offset_min": pd.Series(dtype="int64"),
-                    "offset_max": pd.Series(dtype="int64"),
-                    COL_TIME_RANGE: pd.Series(dtype="int64"),
-                    COL_TIME_START: pd.Series(dtype="int64"),
-                    COL_TIME_END: pd.Series(dtype="int64"),
-                }
-            )
+            events_meta = dfanalyzer_events_meta(self._scan_group_by())
 
             def _extract_and_decode(ipc_future, key, meta):
                 ipc_bytes = ipc_future[key]
@@ -619,6 +608,7 @@ class DFTracerAnalyzer(Analyzer):
             HLM_INT_INDEX_COLS,
             HLM_FLOAT_METRIC_COLS,
             self._postread_hlm_config(data_type),
+            merge_partials=True,
         )
 
     def _compute_high_level_metrics(self, traces, view_types, partition_size):
@@ -826,15 +816,24 @@ class DFTracerAnalyzer(Analyzer):
     def get_total_event_count(self, traces: dd.DataFrame) -> int:
         return traces[COL_COUNT].sum().persist()
 
+    def _scan_group_by(self):
+        """Fold the scan to the grain these views need, keeping proc_name so
+        the downstream view code still finds it."""
+        views = list(getattr(self, "_view_types", None) or _DEFAULT_VIEW_TYPES)
+        return hlm_scan_group_by(views + ["proc_name"], HLM_EXTRA_COLS)
+
+    def _index_count(self, hash_type):
+        return count_index_hashes(self._index_path, hash_type)
+
     def get_unique_file_count(self, traces: dd.DataFrame):
-        file_hash = traces["file_hash"]
-        return file_hash[file_hash != ""].nunique()
+        # Folded scans drop file_hash, and this is a property of the index.
+        return self._index_count("file")
 
     def get_unique_host_count(self, traces: dd.DataFrame):
-        return traces["host_hash"].nunique()
+        return self._index_count("host")
 
     def get_unique_process_count(self, traces: dd.DataFrame):
-        return traces["pid"].nunique()
+        return traces["proc_name"].nunique()
 
     @staticmethod
     def _apply_ignore_filters(df, ignored_file_patterns, ignored_func_names, ignored_func_patterns):
@@ -851,6 +850,10 @@ class DFTracerAnalyzer(Analyzer):
 
     @classmethod
     def _fix_file_posix_category(cls, df: pd.DataFrame):
+        # A folded scan carries no file_name, and the HLM applies this same
+        # rule worker-side from postread_config.
+        if "file_name" not in df.columns:
+            return df
         # base condition is fixed on the original cat; suffixes (purpose then
         # filesystem) are applied cumulatively per POSIX_CAT_RULES order.
         base_condition = df["cat"].str.contains("posix|stdio") & ~df["file_name"].isna()
