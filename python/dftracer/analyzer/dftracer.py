@@ -27,7 +27,11 @@ from dftracer.utils.dfanalyzer import (
     dfanalyzer_events_meta,
     count_index_hashes,
 )
-from dftracer.utils.dask import _assign_files_by_pid, register_auto_thread_plugin
+from dftracer.utils.dask import (
+    _assign_files_by_pid,
+    _ProgressAggregator,
+    register_auto_thread_plugin,
+)
 from dask.distributed import Client, get_client, wait
 from typing import Dict, List, Optional, Tuple
 
@@ -57,7 +61,7 @@ from .constants import (
     IOCategory,
 )
 from .types import ReadTraceResult, ViewType
-from .utils.log_utils import log_block
+from .utils.log_utils import current_progress, log_block
 
 logger = structlog.get_logger()
 
@@ -274,9 +278,7 @@ class DFTracerAnalyzer(Analyzer):
             def _on_progress(done: int, total: int, phase: str) -> None:
                 # One bar; the description tracks the current phase (Indexing,
                 # Ingesting SSTs, Building summaries). total 0 -> pulsing.
-                _bar.update(
-                    _task, description=phase, completed=done, total=(total or None)
-                )
+                _bar.update(_task, description=phase, completed=done, total=(total or None))
 
             ensure_index(
                 trace_path,
@@ -498,7 +500,15 @@ class DFTracerAnalyzer(Analyzer):
         event_futures = []
         worker_scan_args = []
 
-        with log_block("submit_workers"):
+        # Feed shard-scan progress into the enclosing "Read trace & stats" bar
+        # (published by the base analyzer's console_progress_block).
+        _scan_bar = current_progress()
+
+        def _feed_scan(done, total, phase):
+            if _scan_bar is not None and phase == "Reading traces":
+                _scan_bar(done, total)
+
+        with _ProgressAggregator(dask_client, _feed_scan), log_block("submit_workers"):
             all_file_ids = set(file_id_to_path.keys())
             full_file_pids = {fid: file_pids.get(fid, set()) for fid in all_file_ids}
             worker_file_ids = _assign_files_by_pid(full_file_pids, n_workers)

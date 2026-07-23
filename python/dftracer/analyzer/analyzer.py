@@ -59,7 +59,7 @@ from .utils.dask_utils import flatten_column_names
 from .utils.expr_utils import extract_numerator_and_denominators
 from .utils.file_utils import ensure_dir
 from .utils.json_encoders import NpEncoder
-from .utils.log_utils import console_block, log_block
+from .utils.log_utils import console_block, console_progress_block, log_block
 from .utils.pandas_utils import to_nullable_numeric
 
 
@@ -305,7 +305,7 @@ class Analyzer(abc.ABC):
         profiles = None
         traces = None
         raw_stats = None
-        with console_block("Read trace & stats"):
+        with console_progress_block("Read trace & stats"):
             with log_block("read_trace"):
                 read_result = self.read_trace(
                     trace_path=trace_path,
@@ -1273,7 +1273,8 @@ class Analyzer(abc.ABC):
         with log_block("evaluate_analysis_facts"):
             analysis_facts = self._evaluate_analysis_facts(flat_views=flat_views, raw_stats=raw_stats)
         output_flat_views, output_analysis_facts = self._materialize_output_artifacts(
-            flat_views=flat_views, analysis_facts=analysis_facts,
+            flat_views=flat_views,
+            analysis_facts=analysis_facts,
         )
 
         return AnalysisResult(
@@ -1409,9 +1410,7 @@ class Analyzer(abc.ABC):
 
         # Recompute time_start / time_end / time_range for each sub-bucket
         base_start = np.repeat(df["time_start"].values, expansion_factor)
-        expanded["time_start"] = pd.array(
-            (base_start + sub_idx * sub_granularity_us).astype(np.int64), dtype="Int64"
-        )
+        expanded["time_start"] = pd.array((base_start + sub_idx * sub_granularity_us).astype(np.int64), dtype="Int64")
         expanded["time_end"] = pd.array(
             (expanded["time_start"].to_numpy(dtype=np.int64, na_value=0) + sub_granularity_us),
             dtype="Int64",
@@ -1437,14 +1436,10 @@ class Analyzer(abc.ABC):
             total_time = np.repeat(df["time"].values, expansion_factor)
             expanded["time"] = (total_time * weights).astype("float64")
         else:
-            expanded["time"] = (
-                np.repeat(df["time"].values, expansion_factor) / expansion_factor
-            ).astype("float64")
+            expanded["time"] = (np.repeat(df["time"].values, expansion_factor) / expansion_factor).astype("float64")
 
         # count and size always split uniformly (they are discrete totals)
-        expanded["count"] = (
-            np.repeat(df["count"].fillna(0).values, expansion_factor) / expansion_factor
-        )
+        expanded["count"] = np.repeat(df["count"].fillna(0).values, expansion_factor) / expansion_factor
         base_count = expanded["count"].values
         floor_count = np.floor(base_count).astype(np.int64)
         remainders = np.repeat(
@@ -1456,9 +1451,7 @@ class Analyzer(abc.ABC):
 
         orig_size = df["size"].values
         has_size = pd.notna(orig_size)
-        rep_size = np.repeat(
-            np.where(has_size, orig_size.astype(float), 0.0), expansion_factor
-        )
+        rep_size = np.repeat(np.where(has_size, orig_size.astype(float), 0.0), expansion_factor)
         rep_has_size = np.repeat(has_size, expansion_factor)
         size_vals = np.where(rep_has_size, (rep_size / expansion_factor).astype(np.int64), 0)
         size_mask = ~rep_has_size
