@@ -1,12 +1,11 @@
 import hydra
 import signal
-from dask_jobqueue import LSFCluster, PBSCluster, SLURMCluster
 from dataclasses import asdict, dataclass, field
 from distributed import LocalCluster
 from hydra.core.config_store import ConfigStore
 from hydra.utils import instantiate
 from omegaconf import MISSING
-from typing import Any, List, Optional, Union
+from typing import TYPE_CHECKING, Any, List, Optional, Union
 
 from .config import (
     ClusterConfig,
@@ -51,7 +50,18 @@ cs.store(group="cluster", name="pbs", node=PBSClusterConfig)
 cs.store(group="cluster", name="slurm", node=SLURMClusterConfig)
 
 
-ClusterType = Union[ExternalCluster, LocalCluster, LSFCluster, PBSCluster, SLURMCluster]
+# dask_jobqueue is imported for typing only. Importing it eagerly installs a
+# SIGINT handler at module scope (dask_jobqueue/runner.py), and signal.signal()
+# raises ValueError off the main thread -- which is where Streamlit and other
+# embedders run user scripts, so `import dftracer.analyzer` would fail there.
+# Hydra instantiates these clusters from their _target_ strings, so the classes
+# are never needed at import time.
+if TYPE_CHECKING:
+    from dask_jobqueue import LSFCluster, PBSCluster, SLURMCluster
+
+    ClusterType = Union[ExternalCluster, LocalCluster, LSFCluster, PBSCluster, SLURMCluster]
+else:
+    ClusterType = Any
 
 
 @hydra.main(version_base=None, config_name="config")

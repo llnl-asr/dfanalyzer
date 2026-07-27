@@ -41,6 +41,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+web = ["streamlit>=1.60", "altair>=5.0"]
 dev = ["pytest>=8.0", "pytest-forked>=1.6", "py>=1.11"]
 
 [project.scripts]

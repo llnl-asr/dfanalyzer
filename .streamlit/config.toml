@@ -1,0 +1,11 @@
+[server]
+# Streamlit defaults to 200 MB, which no Community Cloud app can survive: that
+# tier guarantees only 690 MB of memory (2.7 GB ceiling), and the analyzer costs
+# roughly 11-17 MB of peak RSS per 1,000 trace events on top of a ~320 MB floor.
+# A 1 MB gzipped trace already exceeds the guaranteed allocation, and 3.8 MB
+# was measured at 3,499 MB -- past even the ceiling.
+#
+# Note this is enforced *per file* while the uploader accepts several, so the
+# app also checks the total across a submission -- see MAX_UPLOAD_MB in
+# streamlit_app.py, which tests/test_streamlit_app.py keeps in agreement.
+maxUploadSize = 2
