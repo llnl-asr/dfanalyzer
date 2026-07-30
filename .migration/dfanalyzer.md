@@ -41,3 +41,6 @@ Selected: 2026-07-30. Source: git@github.com:llnl/dfanalyzer.git (develop). Targ
 
 - 2026-07-30: plan created.
 - 2026-07-30: executed — .gitlab-ci.yml written/validated, docs build + pytest smoke collection verified locally, no in-place dep changes needed, committed on gitlab-migration and pushed develop/tags/gitlab-migration to czgitlab. Awaiting pipeline + user merge.
+- 2026-07-30: CI switched to corona flux-allocation flow, single allocation per pipeline; MR opened.
+- 2026-07-30: Flux allocation made global via allocate/.flux-jobid artifact/release-allocation jobs; wait-event timeout removed.
+- 2026-07-30: branch rebuilt onto merged develop; allocate switched to flux alloc --bg.

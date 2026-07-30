@@ -5,27 +5,49 @@
 #
 # Publish jobs are `when: manual` and gated on v*.*.* tags, as on GitHub.
 
-stages: [test, build, deploy]
+stages: [alloc, test, build, deploy, cleanup]
 
-# LC corona batch runner (1 node) — mirrors the dftracer .corona-batch convention.
-.corona-batch:
+# LC corona CI via a single shared Flux allocation:
+#  - `allocate` creates ONE 1-node allocation and saves its Flux job id to
+#    .flux-jobid (artifact) so ALL jobs in the pipeline share it globally.
+#  - every CI job reads the id and runs its steps via `flux proxy <jobid>`.
+#  - `release-allocation` cancels it at the end (runs even on failure).
+.corona-flux:
   id_tokens:
     SITE_ID_TOKEN:
       aud: https://lc.llnl.gov/gitlab
-  tags: [batch, corona]
+  tags: [shell, corona]
   variables:
     PYTHON_MODULE: python/3.13.2
-    GCC_MODULE: gcc/11.2.1
+    COMPILER_MODULE: gcc/11.2.1
     SMALL_QUEUE: pdebug
     SMALL_QUEUE_WALLTIME: 60
-    SCHEDULER_PARAMETERS: "-N 1 -q $SMALL_QUEUE -t $SMALL_QUEUE_WALLTIME"
+
+allocate:
+  extends: .corona-flux
+  stage: alloc
+  rules:
+    - if: '$CI_COMMIT_TAG =~ /^v\d+\.\d+\.\d+$/'
+    - if: '$CI_PIPELINE_SOURCE == "web" && $RUN_FULL_TESTS == "true"'
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_PIPELINE_SOURCE == "push"'
+  script:
+    - flux alloc --bg -N 1 -q "$SMALL_QUEUE" -t "${SMALL_QUEUE_WALLTIME}m" --job-name=dfanalyzer-ci
+    - JOBID=$(flux job last)
+    - echo "$JOBID" > .flux-jobid
+    - echo "Created Flux allocation $JOBID (shared by all CI jobs)"
+    - flux proxy "$JOBID" flux resource list
+  artifacts:
+    paths: [.flux-jobid]
 
 # GitHub matrix (ubuntu-22.04 x python 3.10-3.13) collapsed to the LC module
 # toolchain ($PYTHON_MODULE = python/3.13.2) on corona.
+# One allocation; tests + docs both run on it via flux proxy.
 build-and-test:
-  extends: .corona-batch
+  extends: .corona-flux
   stage: test
-  timeout: 30m
+  needs: [allocate]
+  timeout: 60m
   variables:
     DFANALYZER_CLUSTER_RESTART_TIMEOUT_SECONDS: "600"
     OMPI_ALLOW_RUN_AS_ROOT: "1"
@@ -43,18 +65,16 @@ build-and-test:
     - if: '$CI_PIPELINE_SOURCE == "push"'
       variables:
         TEST_TYPE: smoke
-  before_script:
-    - module load $PYTHON_MODULE
-    - python3 -m venv .venv && source .venv/bin/activate
-    - python -m pip install --upgrade pip
-    - pip install --upgrade setuptools wheel
-    - pip install -r tests/requirements.txt
-    - pip install .
   script:
+    - JOBID=$(cat .flux-jobid)
+    - flux proxy "$JOBID" bash -lc "module load $PYTHON_MODULE && python3 -m venv .venv && source .venv/bin/activate && python -m pip install --upgrade pip && pip install --upgrade setuptools wheel && pip install -r tests/requirements.txt && pip install ."
     - echo "Running test suite: $TEST_TYPE"
-    - pytest -m "$TEST_TYPE" --verbose --cov=dftracer.analyzer --cov-report=xml
-    # Run DFAnalyzer with external cluster
+    - flux proxy "$JOBID" bash -lc "source .venv/bin/activate && pytest -m \"$TEST_TYPE\" --verbose --cov=dftracer.analyzer --cov-report=xml"
+    # Run DFAnalyzer with external cluster. Written to a script file so the
+    # whole check runs as one step inside the allocation via flux proxy.
     - |
+      cat > ci-cluster-check.sh <<'EOF'
+      set -e
       dfanalyzer-cluster cluster=local cluster.processes=False \
         +cluster.protocol=tcp +cluster.worker_class=distributed.nanny.Nanny > cluster.log 2>&1 &
       cluster_pid=$!
@@ -81,65 +101,84 @@ build-and-test:
       # Kill the cluster process
       kill $cluster_pid || true
       wait $cluster_pid 2>/dev/null || true
+      EOF
+      flux proxy "$JOBID" bash -lc "source .venv/bin/activate && bash ci-cluster-check.sh"
+    # Docs build (published by the pages job below from this artifact).
+    # NOTE(gitlab-migration): docs/requirements.txt pins (sphinx 5.0.2, babel
+    # 2.10) target Python 3.10 and fail on the python/3.13.2 module (stdlib
+    # `cgi` removed). Install unpinned equivalents instead; requirements.txt
+    # is left untouched for ReadTheDocs.
+    - flux proxy "$JOBID" bash -lc "module load $PYTHON_MODULE && python3 -m venv .venv-docs && source .venv-docs/bin/activate && pip install sphinx sphinx-rtd-theme sphinxcontrib-mermaid && sphinx-build -b html docs public"
   artifacts:
     when: always
     paths:
       - .coverage
       - coverage.xml
+      - public
     expire_in: 7 days
 
 # From cd.yml release-build: build sdist + wheel on release tags. Manual, as
-# publishing is not automated during migration.
+# publishing is not automated during migration. Runs in its own allocation
+# (manual jobs sit outside the normal one-allocation pipeline).
 release-build:
-  extends: .corona-batch
+  extends: .corona-flux
   stage: build
   when: manual
   rules:
     - if: '$CI_COMMIT_TAG =~ /^v\d+\.\d+\.\d+$/'
       when: manual
-  before_script:
-    - module load $PYTHON_MODULE
-    - python3 -m venv .venv && source .venv/bin/activate
-    - python -m pip install --upgrade pip
-    - pip install --upgrade build
   script:
+    - flux alloc --bg -N 1 -q "$SMALL_QUEUE" -t "${SMALL_QUEUE_WALLTIME}m" --job-name=dfanalyzer-release
+    - JOBID=$(flux job last)
     # Pure Python: one py3-none-any wheel plus an sdist covers every
     # supported interpreter and platform.
-    - python3 -m build .
+    - flux proxy "$JOBID" bash -lc "module load $PYTHON_MODULE && python3 -m venv .venv && source .venv/bin/activate && python -m pip install --upgrade pip && pip install --upgrade build && python3 -m build ."
+  after_script:
+    - JOBID=$(flux job last) && flux cancel "$JOBID" || true
   artifacts:
     paths: [dist/]
 
 # From cd.yml pypi-publish: requires PYPI_TOKEN CI/CD variable. Manual.
+# Network-only work — runs directly on the shell runner, no allocation.
 pypi-publish:
-  extends: .corona-batch
+  extends: .corona-flux
   stage: deploy
   when: manual
   needs: [release-build]
   rules:
     - if: '$CI_COMMIT_TAG =~ /^v\d+\.\d+\.\d+$/'
       when: manual
-  before_script:
+  script:
     - module load $PYTHON_MODULE
     - python3 -m venv .venv && source .venv/bin/activate
     - pip install --upgrade twine
-  script:
     - twine upload -u __token__ -p "$PYPI_TOKEN" dist/*
 
+# Publishes the artifact from build-and-test — shell runner, no allocation.
 pages:
-  extends: .corona-batch
+  extends: .corona-flux
   stage: deploy
+  needs: [build-and-test]
   rules:
     - if: '$CI_COMMIT_BRANCH == "develop"'
     - if: '$CI_COMMIT_BRANCH == "gitlab-migration"'  # temporary: remove after merge to develop
-  before_script:
-    - module load $PYTHON_MODULE
-    - python3 -m venv .venv-docs && source .venv-docs/bin/activate
   script:
-    # NOTE(gitlab-migration): docs/requirements.txt pins (sphinx 5.0.2, babel
-    # 2.10) target Python 3.10 and fail on the python/3.13.2 module (stdlib
-    # `cgi` removed). Install unpinned equivalents instead; requirements.txt
-    # is left untouched for ReadTheDocs.
-    - pip install sphinx sphinx-rtd-theme sphinxcontrib-mermaid
-    - sphinx-build -b html docs public
+    - echo "Publishing docs built by build-and-test"
   artifacts:
     paths: [public]
+
+release-allocation:
+  extends: .corona-flux
+  stage: cleanup
+  needs: [allocate, build-and-test]
+  rules:
+    - if: '$CI_COMMIT_TAG =~ /^v\d+\.\d+\.\d+$/'
+      when: always
+    - if: '$CI_PIPELINE_SOURCE == "web" && $RUN_FULL_TESTS == "true"'
+      when: always
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      when: always
+    - if: '$CI_PIPELINE_SOURCE == "push"'
+      when: always
+  script:
+    - flux cancel "$(cat .flux-jobid)" || true
