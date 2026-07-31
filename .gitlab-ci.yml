@@ -5,27 +5,53 @@
 #
 # Publish jobs are `when: manual` and gated on v*.*.* tags, as on GitHub.
 
-stages: [test, build, deploy]
+stages: [alloc, test, build, deploy, cleanup]
 
-# LC corona batch runner (1 node) — mirrors the dftracer .corona-batch convention.
-.corona-batch:
+# LC corona CI via a single shared Flux allocation:
+#  - `allocate` creates ONE 1-node allocation and saves its Flux job id to
+#    .flux-jobid (artifact) so ALL jobs in the pipeline share it globally.
+#  - every CI job reads the id and runs its steps via `flux proxy <jobid>`.
+#  - `release-allocation` cancels it at the end (runs even on failure).
+.corona-flux:
   id_tokens:
     SITE_ID_TOKEN:
       aud: https://lc.llnl.gov/gitlab
-  tags: [batch, corona]
+  tags: [shell, corona]
   variables:
     PYTHON_MODULE: python/3.13.2
-    GCC_MODULE: gcc/11.2.1
+    COMPILER_MODULE: gcc/11.2.1
     SMALL_QUEUE: pdebug
     SMALL_QUEUE_WALLTIME: 60
-    SCHEDULER_PARAMETERS: "-N 1 -q $SMALL_QUEUE -t $SMALL_QUEUE_WALLTIME"
+
+allocate:
+  extends: .corona-flux
+  stage: alloc
+  rules:
+    - if: '$CI_COMMIT_TAG =~ /^v\d+\.\d+\.\d+$/'
+    - if: '$CI_PIPELINE_SOURCE == "web" && $RUN_FULL_TESTS == "true"'
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_PIPELINE_SOURCE == "push"'
+  script:
+    # Unique per-job name: `flux job last` is user-global and races with
+    # other pipelines running under the same LC account.
+    - ALLOC_NAME=dfanalyzer-ci-$CI_PIPELINE_ID-$CI_JOB_ID
+    - flux alloc --bg -N 1 -q "$SMALL_QUEUE" -t "${SMALL_QUEUE_WALLTIME}m" --job-name="$ALLOC_NAME"
+    - JOBID=$(flux jobs -n --name="$ALLOC_NAME" -o "{id}" | head -1)
+    - test -n "$JOBID"
+    - echo "$JOBID" > .flux-jobid
+    - echo "Created Flux allocation $JOBID (shared by all CI jobs)"
+    - flux proxy "$JOBID" flux resource list
+  artifacts:
+    paths: [.flux-jobid]
 
 # GitHub matrix (ubuntu-22.04 x python 3.10-3.13) collapsed to the LC module
 # toolchain ($PYTHON_MODULE = python/3.13.2) on corona.
+# One allocation; tests + docs both run on it via flux proxy.
 build-and-test:
-  extends: .corona-batch
+  extends: .corona-flux
   stage: test
-  timeout: 30m
+  needs: [allocate]
+  timeout: 60m
   variables:
     DFANALYZER_CLUSTER_RESTART_TIMEOUT_SECONDS: "600"
     OMPI_ALLOW_RUN_AS_ROOT: "1"
@@ -43,103 +69,86 @@ build-and-test:
     - if: '$CI_PIPELINE_SOURCE == "push"'
       variables:
         TEST_TYPE: smoke
-  before_script:
-    - module load $PYTHON_MODULE
-    - python3 -m venv .venv && source .venv/bin/activate
-    - python -m pip install --upgrade pip
-    - pip install --upgrade setuptools wheel
-    - pip install -r tests/requirements.txt
-    - pip install .
   script:
-    - echo "Running test suite: $TEST_TYPE"
-    - pytest -m "$TEST_TYPE" --verbose --cov=dftracer.analyzer --cov-report=xml
-    # Run DFAnalyzer with external cluster
-    - |
-      dfanalyzer-cluster cluster=local cluster.processes=False \
-        +cluster.protocol=tcp +cluster.worker_class=distributed.nanny.Nanny > cluster.log 2>&1 &
-      cluster_pid=$!
-
-      # Wait for the scheduler address to appear in the log (file will contain only the address)
-      for i in {1..30}; do
-        if grep -q '^tcp://' cluster.log; then break; fi
-        sleep 1
-      done
-      scheduler_address=$(grep '^tcp://' cluster.log | tail -1)
-      echo "Scheduler address: $scheduler_address"
-
-      # Run analysis commands using the external cluster. The dftracer/ai run is
-      # facts-enabled (output=console on the time_range axis) so it both validates the
-      # analysis AND prints the Analysis Facts table to the CI log -- a single run, no
-      # duplicate.
-      dfanalyzer analyzer=dftracer analyzer/preset=ai trace_path=tests/data/extracted/dftracer-ai \
-        cluster=external cluster.restart_on_connect=False cluster.scheduler_address=$scheduler_address \
-        view_types=[time_range] facts.enabled=true facts.eval_mode=rule \
-        facts.eval_rule_file=tests/data/ci_facts_rules.yaml output=console 2>&1 | tee facts_console.log
-      # The dftracer/ai run above is facts-enabled; verify facts reached the console.
-      grep -q "Analysis Facts (" facts_console.log || { echo "ERROR: no analysis facts printed to console"; exit 1; }
-
-      # Kill the cluster process
-      kill $cluster_pid || true
-      wait $cluster_pid 2>/dev/null || true
+    - JOBID=$(cat .flux-jobid)
+    - 'echo "Running test suite: $TEST_TYPE"'
+    # flux run -N 1 executes the script ON the allocated node; podman provides
+    # the python environment (mirrors the GitHub Actions CI).
+    - flux proxy "$JOBID" flux run -N 1 --env=TEST_TYPE="$TEST_TYPE" bash .gitlab/ci/build-test-docs.sh
   artifacts:
     when: always
     paths:
       - .coverage
       - coverage.xml
+      - public
     expire_in: 7 days
 
 # From cd.yml release-build: build sdist + wheel on release tags. Manual, as
-# publishing is not automated during migration.
+# publishing is not automated during migration. Runs in its own allocation
+# (manual jobs sit outside the normal one-allocation pipeline).
 release-build:
-  extends: .corona-batch
+  extends: .corona-flux
   stage: build
   when: manual
   rules:
     - if: '$CI_COMMIT_TAG =~ /^v\d+\.\d+\.\d+$/'
       when: manual
-  before_script:
-    - module load $PYTHON_MODULE
-    - python3 -m venv .venv && source .venv/bin/activate
-    - python -m pip install --upgrade pip
-    - pip install --upgrade build
   script:
+    # Unique per-job name: `flux job last` is user-global and races with
+    # other pipelines running under the same LC account.
+    - ALLOC_NAME=dfanalyzer-release-$CI_PIPELINE_ID-$CI_JOB_ID
+    - flux alloc --bg -N 1 -q "$SMALL_QUEUE" -t "${SMALL_QUEUE_WALLTIME}m" --job-name="$ALLOC_NAME"
+    - JOBID=$(flux jobs -n --name="$ALLOC_NAME" -o "{id}" | head -1)
+    - test -n "$JOBID"
+    - echo "$JOBID" > .flux-jobid
     # Pure Python: one py3-none-any wheel plus an sdist covers every
     # supported interpreter and platform.
-    - python3 -m build .
+    - flux proxy "$JOBID" flux run -N 1 bash .gitlab/ci/release-build.sh
+  after_script:
+    - test -s .flux-jobid && flux cancel "$(cat .flux-jobid)" || true
   artifacts:
     paths: [dist/]
 
 # From cd.yml pypi-publish: requires PYPI_TOKEN CI/CD variable. Manual.
+# Network-only work — runs directly on the shell runner, no allocation.
 pypi-publish:
-  extends: .corona-batch
+  extends: .corona-flux
   stage: deploy
   when: manual
   needs: [release-build]
   rules:
     - if: '$CI_COMMIT_TAG =~ /^v\d+\.\d+\.\d+$/'
       when: manual
-  before_script:
-    - module load $PYTHON_MODULE
-    - python3 -m venv .venv && source .venv/bin/activate
-    - pip install --upgrade twine
   script:
-    - twine upload -u __token__ -p "$PYPI_TOKEN" dist/*
+    # Network-only work: podman on the shell runner, no allocation needed.
+    - bash .gitlab/ci/pypi-publish.sh
 
+# Publishes the artifact from build-and-test — shell runner, no allocation.
 pages:
-  extends: .corona-batch
+  extends: .corona-flux
   stage: deploy
+  needs: [build-and-test]
   rules:
     - if: '$CI_COMMIT_BRANCH == "develop"'
     - if: '$CI_COMMIT_BRANCH == "gitlab-migration"'  # temporary: remove after merge to develop
-  before_script:
-    - module load $PYTHON_MODULE
-    - python3 -m venv .venv-docs && source .venv-docs/bin/activate
   script:
-    # NOTE(gitlab-migration): docs/requirements.txt pins (sphinx 5.0.2, babel
-    # 2.10) target Python 3.10 and fail on the python/3.13.2 module (stdlib
-    # `cgi` removed). Install unpinned equivalents instead; requirements.txt
-    # is left untouched for ReadTheDocs.
-    - pip install sphinx sphinx-rtd-theme sphinxcontrib-mermaid
-    - sphinx-build -b html docs public
+    - echo "Publishing docs built by build-and-test"
   artifacts:
     paths: [public]
+
+release-allocation:
+  extends: .corona-flux
+  stage: cleanup
+  # Runs last: alloc → build-and-test → pages → deallocate.
+  needs: [allocate, build-and-test, {job: pages, optional: true}]
+  rules:
+    - if: '$CI_COMMIT_TAG =~ /^v\d+\.\d+\.\d+$/'
+      when: always
+    - if: '$CI_PIPELINE_SOURCE == "web" && $RUN_FULL_TESTS == "true"'
+      when: always
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      when: always
+    - if: '$CI_PIPELINE_SOURCE == "push"'
+      when: always
+  script:
+    - test -s .flux-jobid && flux cancel "$(cat .flux-jobid)" || true
