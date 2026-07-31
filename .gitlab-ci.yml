@@ -67,48 +67,10 @@ build-and-test:
         TEST_TYPE: smoke
   script:
     - JOBID=$(cat .flux-jobid)
-    - flux proxy "$JOBID" bash -lc "module load $PYTHON_MODULE && python3 -m venv .venv && source .venv/bin/activate && python -m pip install --upgrade pip && pip install --upgrade setuptools wheel && pip install -r tests/requirements.txt && pip install ."
     - echo "Running test suite: $TEST_TYPE"
-    - flux proxy "$JOBID" bash -lc "source .venv/bin/activate && pytest -m \"$TEST_TYPE\" --verbose --cov=dftracer.analyzer --cov-report=xml"
-    # Run DFAnalyzer with external cluster. Written to a script file so the
-    # whole check runs as one step inside the allocation via flux proxy.
-    - |
-      cat > ci-cluster-check.sh <<'EOF'
-      set -e
-      dfanalyzer-cluster cluster=local cluster.processes=False \
-        +cluster.protocol=tcp +cluster.worker_class=distributed.nanny.Nanny > cluster.log 2>&1 &
-      cluster_pid=$!
-
-      # Wait for the scheduler address to appear in the log (file will contain only the address)
-      for i in {1..30}; do
-        if grep -q '^tcp://' cluster.log; then break; fi
-        sleep 1
-      done
-      scheduler_address=$(grep '^tcp://' cluster.log | tail -1)
-      echo "Scheduler address: $scheduler_address"
-
-      # Run analysis commands using the external cluster. The dftracer/ai run is
-      # facts-enabled (output=console on the time_range axis) so it both validates the
-      # analysis AND prints the Analysis Facts table to the CI log -- a single run, no
-      # duplicate.
-      dfanalyzer analyzer=dftracer analyzer/preset=ai trace_path=tests/data/extracted/dftracer-ai \
-        cluster=external cluster.restart_on_connect=False cluster.scheduler_address=$scheduler_address \
-        view_types=[time_range] facts.enabled=true facts.eval_mode=rule \
-        facts.eval_rule_file=tests/data/ci_facts_rules.yaml output=console 2>&1 | tee facts_console.log
-      # The dftracer/ai run above is facts-enabled; verify facts reached the console.
-      grep -q "Analysis Facts (" facts_console.log || { echo "ERROR: no analysis facts printed to console"; exit 1; }
-
-      # Kill the cluster process
-      kill $cluster_pid || true
-      wait $cluster_pid 2>/dev/null || true
-      EOF
-      flux proxy "$JOBID" bash -lc "source .venv/bin/activate && bash ci-cluster-check.sh"
-    # Docs build (published by the pages job below from this artifact).
-    # NOTE(gitlab-migration): docs/requirements.txt pins (sphinx 5.0.2, babel
-    # 2.10) target Python 3.10 and fail on the python/3.13.2 module (stdlib
-    # `cgi` removed). Install unpinned equivalents instead; requirements.txt
-    # is left untouched for ReadTheDocs.
-    - flux proxy "$JOBID" bash -lc "module load $PYTHON_MODULE && python3 -m venv .venv-docs && source .venv-docs/bin/activate && pip install sphinx sphinx-rtd-theme sphinxcontrib-mermaid && sphinx-build -b html docs public"
+    # flux run -N 1 executes the script ON the allocated node; podman provides
+    # the python environment (mirrors the GitHub Actions CI).
+    - flux proxy "$JOBID" flux run -N 1 --env=TEST_TYPE="$TEST_TYPE" bash .gitlab/ci/build-test-docs.sh
   artifacts:
     when: always
     paths:
@@ -132,7 +94,7 @@ release-build:
     - JOBID=$(flux job last)
     # Pure Python: one py3-none-any wheel plus an sdist covers every
     # supported interpreter and platform.
-    - flux proxy "$JOBID" bash -lc "module load $PYTHON_MODULE && python3 -m venv .venv && source .venv/bin/activate && python -m pip install --upgrade pip && pip install --upgrade build && python3 -m build ."
+    - flux proxy "$JOBID" flux run -N 1 bash .gitlab/ci/release-build.sh
   after_script:
     - JOBID=$(flux job last) && flux cancel "$JOBID" || true
   artifacts:
@@ -170,7 +132,8 @@ pages:
 release-allocation:
   extends: .corona-flux
   stage: cleanup
-  needs: [allocate, build-and-test]
+  # Runs last: alloc → build-and-test → pages → deallocate.
+  needs: [allocate, build-and-test, {job: pages, optional: true}]
   rules:
     - if: '$CI_COMMIT_TAG =~ /^v\d+\.\d+\.\d+$/'
       when: always
