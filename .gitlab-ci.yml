@@ -71,7 +71,7 @@ build-and-test:
         TEST_TYPE: smoke
   script:
     - JOBID=$(cat .flux-jobid)
-    - echo "Running test suite: $TEST_TYPE"
+    - 'echo "Running test suite: $TEST_TYPE"'
     # flux run -N 1 executes the script ON the allocated node; podman provides
     # the python environment (mirrors the GitHub Actions CI).
     - flux proxy "$JOBID" flux run -N 1 --env=TEST_TYPE="$TEST_TYPE" bash .gitlab/ci/build-test-docs.sh
