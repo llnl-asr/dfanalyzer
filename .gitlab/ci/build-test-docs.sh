@@ -16,7 +16,11 @@ PODMAN="podman --root $PODMAN_STORE --runroot $PODMAN_RUNROOT"
 # the bind-mounted checkout stays readable even for images with a non-root USER.
 
 # Install + test suite + external-cluster check, all in one container.
+# -e USER: the dask local_directory default interpolates ${oc.env:USER}
+# (python/dftracer/analyzer/config.py) and podman does not propagate USER, so
+# omegaconf fails with InterpolationResolutionError in every cluster test.
 $PODMAN run --rm --user 0:0 -v "$PWD:/ws" -w /ws -e TEST_TYPE="$TEST_TYPE" \
+  -e USER="${USER:-root}" \
   docker.io/library/python:3.11 bash -ec '
   pip install --quiet --upgrade pip setuptools wheel
   pip install --quiet -r tests/requirements.txt
