@@ -12,8 +12,11 @@ PODMAN_RUNROOT=/var/tmp/$USER/podman-run
 mkdir -p "$PODMAN_STORE" "$PODMAN_RUNROOT"
 PODMAN="podman --root $PODMAN_STORE --runroot $PODMAN_RUNROOT"
 
+# --user 0:0: container root maps to the host user under rootless podman, so
+# the bind-mounted checkout stays readable even for images with a non-root USER.
+
 # Install + test suite + external-cluster check, all in one container.
-$PODMAN run --rm -v "$PWD:/ws" -w /ws -e TEST_TYPE="$TEST_TYPE" \
+$PODMAN run --rm --user 0:0 -v "$PWD:/ws" -w /ws -e TEST_TYPE="$TEST_TYPE" \
   docker.io/library/python:3.11 bash -ec '
   pip install --quiet --upgrade pip setuptools wheel
   pip install --quiet -r tests/requirements.txt
@@ -26,7 +29,7 @@ $PODMAN run --rm -v "$PWD:/ws" -w /ws -e TEST_TYPE="$TEST_TYPE" \
 # NOTE(gitlab-migration): docs/requirements.txt pins (sphinx 5.0.2, babel 2.10)
 # fail on newer Pythons (stdlib `cgi` removed), so unpinned equivalents are
 # installed here; requirements.txt is left untouched for ReadTheDocs.
-$PODMAN run --rm -v "$PWD:/ws" -w /ws docker.io/library/python:3.11 bash -ec '
+$PODMAN run --rm --user 0:0 -v "$PWD:/ws" -w /ws docker.io/library/python:3.11 bash -ec '
   pip install --quiet --upgrade pip
   pip install --quiet sphinx sphinx-rtd-theme sphinxcontrib-mermaid
   sphinx-build -b html docs public
