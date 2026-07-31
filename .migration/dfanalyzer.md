@@ -45,3 +45,4 @@ Selected: 2026-07-30. Source: git@github.com:llnl/dfanalyzer.git (develop). Targ
 - 2026-07-30: Flux allocation made global via allocate/.flux-jobid artifact/release-allocation jobs; wait-event timeout removed.
 - 2026-07-30: branch rebuilt onto merged develop; allocate switched to flux alloc --bg.
 - 2026-07-30: CI now runs inside podman containers (python:3.11) on the allocated node via flux run; cluster-check extracted to .gitlab/ci/cluster-check.sh; TEST_TYPE passed with flux run --env. Pattern validated on cpp-logger.
+- 2026-07-30: fixed allocation-id race — 'flux job last' is user-global and concurrent pipelines cancelled each other's allocations; now uses a unique per-job name (<proj>-$CI_PIPELINE_ID-$CI_JOB_ID) with 'flux jobs --name' lookup, and cleanup only cancels a non-empty .flux-jobid.

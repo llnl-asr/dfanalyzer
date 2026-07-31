@@ -32,8 +32,12 @@ allocate:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
     - if: '$CI_PIPELINE_SOURCE == "push"'
   script:
-    - flux alloc --bg -N 1 -q "$SMALL_QUEUE" -t "${SMALL_QUEUE_WALLTIME}m" --job-name=dfanalyzer-ci
-    - JOBID=$(flux job last)
+    # Unique per-job name: `flux job last` is user-global and races with
+    # other pipelines running under the same LC account.
+    - ALLOC_NAME=dfanalyzer-ci-$CI_PIPELINE_ID-$CI_JOB_ID
+    - flux alloc --bg -N 1 -q "$SMALL_QUEUE" -t "${SMALL_QUEUE_WALLTIME}m" --job-name="$ALLOC_NAME"
+    - JOBID=$(flux jobs -n --name="$ALLOC_NAME" -o "{id}" | head -1)
+    - test -n "$JOBID"
     - echo "$JOBID" > .flux-jobid
     - echo "Created Flux allocation $JOBID (shared by all CI jobs)"
     - flux proxy "$JOBID" flux resource list
@@ -90,13 +94,18 @@ release-build:
     - if: '$CI_COMMIT_TAG =~ /^v\d+\.\d+\.\d+$/'
       when: manual
   script:
-    - flux alloc --bg -N 1 -q "$SMALL_QUEUE" -t "${SMALL_QUEUE_WALLTIME}m" --job-name=dfanalyzer-release
-    - JOBID=$(flux job last)
+    # Unique per-job name: `flux job last` is user-global and races with
+    # other pipelines running under the same LC account.
+    - ALLOC_NAME=dfanalyzer-release-$CI_PIPELINE_ID-$CI_JOB_ID
+    - flux alloc --bg -N 1 -q "$SMALL_QUEUE" -t "${SMALL_QUEUE_WALLTIME}m" --job-name="$ALLOC_NAME"
+    - JOBID=$(flux jobs -n --name="$ALLOC_NAME" -o "{id}" | head -1)
+    - test -n "$JOBID"
+    - echo "$JOBID" > .flux-jobid
     # Pure Python: one py3-none-any wheel plus an sdist covers every
     # supported interpreter and platform.
     - flux proxy "$JOBID" flux run -N 1 bash .gitlab/ci/release-build.sh
   after_script:
-    - JOBID=$(flux job last) && flux cancel "$JOBID" || true
+    - test -s .flux-jobid && flux cancel "$(cat .flux-jobid)" || true
   artifacts:
     paths: [dist/]
 
@@ -142,4 +151,4 @@ release-allocation:
     - if: '$CI_PIPELINE_SOURCE == "push"'
       when: always
   script:
-    - flux cancel "$(cat .flux-jobid)" || true
+    - test -s .flux-jobid && flux cancel "$(cat .flux-jobid)" || true
