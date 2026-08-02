@@ -19,10 +19,9 @@ stages: [alloc, test, build, deploy, cleanup]
   variables:
     PYTHON_MODULE: python/3.13.2
     COMPILER_MODULE: gcc/11.2.1
-    # pbatch, as in the sibling repos: tests plus the wheel build do not
-    # reliably fit the 60m pdebug walltime.
+    # 2h is a ceiling, not a reservation.
     LARGE_QUEUE: pbatch
-    LARGE_QUEUE_WALLTIME: 480
+    LARGE_QUEUE_WALLTIME: 120
 
 allocate:
   extends: .corona-flux
