@@ -1,9 +1,8 @@
 # GitLab CI for dfanalyzer (converted from .github/workflows/ci.yml + cd.yml).
 #
-# Required CI/CD variables (set in GitLab UI → Settings → CI/CD → Variables):
-#   PYPI_TOKEN — PyPI API token for the manual pypi-publish job (was secrets.PYPI_TOKEN).
-#
-# Publish jobs are `when: manual` and gated on v*.*.* tags, as on GitHub.
+# Wheels and docs are published to the shared dldl workspace tree, not PyPI:
+# PyPI releases stay on GitHub. The wheels directory holds every dftracer
+# package, so one --find-links resolves dfanalyzer and dftracer-utils together.
 
 stages: [alloc, test, build, deploy, cleanup]
 
@@ -20,8 +19,10 @@ stages: [alloc, test, build, deploy, cleanup]
   variables:
     PYTHON_MODULE: python/3.13.2
     COMPILER_MODULE: gcc/11.2.1
-    SMALL_QUEUE: pdebug
-    SMALL_QUEUE_WALLTIME: 60
+    # pbatch, as in the sibling repos: tests plus the wheel build do not
+    # reliably fit the 60m pdebug walltime.
+    LARGE_QUEUE: pbatch
+    LARGE_QUEUE_WALLTIME: 480
 
 allocate:
   extends: .corona-flux
@@ -30,12 +31,12 @@ allocate:
     - if: '$CI_COMMIT_TAG =~ /^v\d+\.\d+\.\d+$/'
     - if: '$CI_PIPELINE_SOURCE == "web" && $RUN_FULL_TESTS == "true"'
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
-    - if: '$CI_PIPELINE_SOURCE == "push"'
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == "develop"'
   script:
     # Unique per-job name: `flux job last` is user-global and races with
     # other pipelines running under the same LC account.
     - ALLOC_NAME=dfanalyzer-ci-$CI_PIPELINE_ID-$CI_JOB_ID
-    - flux alloc --bg -N 1 -q "$SMALL_QUEUE" -t "${SMALL_QUEUE_WALLTIME}m" --job-name="$ALLOC_NAME"
+    - flux alloc --bg -N 1 -q "$LARGE_QUEUE" -t "${LARGE_QUEUE_WALLTIME}m" --job-name="$ALLOC_NAME"
     - JOBID=$(flux jobs -n --name="$ALLOC_NAME" -o "{id}" | head -1)
     - test -n "$JOBID"
     - echo "$JOBID" > .flux-jobid
@@ -66,7 +67,7 @@ build-and-test:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
       variables:
         TEST_TYPE: smoke
-    - if: '$CI_PIPELINE_SOURCE == "push"'
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == "develop"'
       variables:
         TEST_TYPE: smoke
   script:
@@ -83,64 +84,39 @@ build-and-test:
       - public
     expire_in: 7 days
 
-# From cd.yml release-build: build sdist + wheel on release tags. Manual, as
-# publishing is not automated during migration. Runs in its own allocation
-# (manual jobs sit outside the normal one-allocation pipeline).
-release-build:
+# Pure Python: one py3-none-any wheel plus an sdist covers every supported
+# interpreter and platform, so no cibuildwheel matrix is needed.
+wheels:
   extends: .corona-flux
   stage: build
-  when: manual
+  needs: [allocate]
   rules:
     - if: '$CI_COMMIT_TAG =~ /^v\d+\.\d+\.\d+$/'
-      when: manual
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == "develop"'
   script:
-    # Unique per-job name: `flux job last` is user-global and races with
-    # other pipelines running under the same LC account.
-    - ALLOC_NAME=dfanalyzer-release-$CI_PIPELINE_ID-$CI_JOB_ID
-    - flux alloc --bg -N 1 -q "$SMALL_QUEUE" -t "${SMALL_QUEUE_WALLTIME}m" --job-name="$ALLOC_NAME"
-    - JOBID=$(flux jobs -n --name="$ALLOC_NAME" -o "{id}" | head -1)
-    - test -n "$JOBID"
-    - echo "$JOBID" > .flux-jobid
-    # Pure Python: one py3-none-any wheel plus an sdist covers every
-    # supported interpreter and platform.
-    - flux proxy "$JOBID" flux run -N 1 bash .gitlab/ci/release-build.sh
-  after_script:
-    - test -s .flux-jobid && flux cancel "$(cat .flux-jobid)" || true
+    - JOBID=$(cat .flux-jobid)
+    - flux proxy "$JOBID" flux run -N 1 bash .gitlab/ci/wheels.sh
   artifacts:
-    paths: [dist/]
+    paths: [wheelhouse/]
 
-# From cd.yml pypi-publish: requires PYPI_TOKEN CI/CD variable. Manual.
-# Network-only work — runs directly on the shell runner, no allocation.
-pypi-publish:
+# Shell runner, no allocation: only copies into the workspace. Depends on both
+# producers, so a failed wheel or test run publishes nothing.
+distribute:
   extends: .corona-flux
   stage: deploy
-  when: manual
-  needs: [release-build]
+  needs: [wheels, build-and-test]
   rules:
     - if: '$CI_COMMIT_TAG =~ /^v\d+\.\d+\.\d+$/'
-      when: manual
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == "develop"'
   script:
-    # Network-only work: podman on the shell runner, no allocation needed.
-    - bash .gitlab/ci/pypi-publish.sh
-
-# Publishes the artifact from build-and-test — shell runner, no allocation.
-pages:
-  extends: .corona-flux
-  stage: deploy
-  needs: [build-and-test]
-  rules:
-    - if: '$CI_COMMIT_BRANCH == "develop"'
-    - if: '$CI_COMMIT_BRANCH == "gitlab-migration"'  # temporary: remove after merge to develop
-  script:
-    - echo "Publishing docs built by build-and-test"
-  artifacts:
-    paths: [public]
+    - bash .gitlab/ci/distribute.sh
 
 release-allocation:
   extends: .corona-flux
   stage: cleanup
-  # Runs last: alloc → build-and-test → pages → deallocate.
-  needs: [allocate, build-and-test, {job: pages, optional: true}]
+  # Runs last: alloc → build-and-test → wheels → deallocate.
+  needs: [allocate, build-and-test, {job: wheels, optional: true}]
   rules:
     - if: '$CI_COMMIT_TAG =~ /^v\d+\.\d+\.\d+$/'
       when: always
@@ -148,7 +124,7 @@ release-allocation:
       when: always
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
       when: always
-    - if: '$CI_PIPELINE_SOURCE == "push"'
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == "develop"'
       when: always
   script:
     - test -s .flux-jobid && flux cancel "$(cat .flux-jobid)" || true
