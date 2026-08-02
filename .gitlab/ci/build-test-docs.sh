@@ -7,6 +7,12 @@ set -ex
 
 TEST_TYPE=${TEST_TYPE:-smoke}
 
+# dftracer-utils on PyPI is the stale review-mode release; the current build
+# only exists in the workspace, as a .postN.dev0 pre-release. PIP_PRE is what
+# makes pip consider it at all -- --find-links alone leaves it invisible.
+DIST_WHEELS="${DFTRACER_DIST_ROOT:-/usr/workspace/dldl/dftracer/distributions}/wheels"
+[ -d "$DIST_WHEELS" ] || { echo "ERROR: $DIST_WHEELS not readable; dftracer-utils would silently resolve to the stale PyPI release"; exit 1; }
+
 PODMAN_STORE=/var/tmp/$USER/podman-root
 PODMAN_RUNROOT=/var/tmp/$USER/podman-run
 mkdir -p "$PODMAN_STORE" "$PODMAN_RUNROOT"
@@ -21,6 +27,7 @@ PODMAN="podman --root $PODMAN_STORE --runroot $PODMAN_RUNROOT"
 # omegaconf fails with InterpolationResolutionError in every cluster test.
 $PODMAN run --rm --user 0:0 -v "$PWD:/ws" -w /ws -e TEST_TYPE="$TEST_TYPE" \
   -e USER="${USER:-root}" \
+  -v "$DIST_WHEELS:/wheels:ro" -e PIP_FIND_LINKS=/wheels -e PIP_PRE=1 \
   docker.io/library/python:3.11 bash -ec '
   pip install --quiet --upgrade pip setuptools wheel
   pip install --quiet -r tests/requirements.txt
