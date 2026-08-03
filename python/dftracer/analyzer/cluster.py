@@ -208,10 +208,23 @@ class AutoClient:
     def accepts(self, nbytes: int) -> bool:
         """Whether this much aggregated data should be handled in process.
 
-        Rejecting promotes, so a caller that has already scanned can drop what
-        it holds and re-submit through the cluster.
+        The workload fits only when its peak (~3x the aggregated bytes: gathered
+        partials + groupby intermediate + result) stays under available memory,
+        i.e. the aggregated bytes are under ~1/3 of it. `max_bytes` is an extra
+        hard cap. Rejecting promotes, so a caller that has already scanned can
+        drop what it holds and re-submit through the cluster; the warning tells a
+        manual-cluster user how much memory or how many nodes they need.
         """
-        if nbytes <= self.max_bytes:
+        from dftracer.utils.dftracer_utils_ext import memory_budget_advice
+
+        advice = memory_budget_advice(nbytes)
+        if not advice["fits"]:
+            logger.warning(
+                advice["warning"],
+                scanned_bytes=nbytes,
+                suggested_nodes=advice["suggested_nodes"],
+            )
+        if advice["fits"] and nbytes <= self.max_bytes:
             logger.info("analysing in process", scanned_bytes=nbytes, max_bytes=self.max_bytes)
             return True
         logger.info(

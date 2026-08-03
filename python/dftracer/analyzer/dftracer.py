@@ -1,35 +1,37 @@
-import dask
 import dask.dataframe as dd
 import math
 import numpy as np
 import os
 import pandas as pd
 import structlog
-import pyarrow as pa
 from betterset import BetterSet
 from dftracer.utils import AggregationConfig, Indexer
 from dftracer.utils.dfanalyzer import (
+    DFAnalyzerAggregatedTraceViewer,
+    HLMConfig,
     build_final_meta,
     build_partial_meta,
+    build_read_frames,
     coerce_arrow_numerics_to_pandas_native,
-    coerce_profile_dtypes,
-    decode_dictionary_columns,
-    distributed_hlm,
-    distributed_time_origin,
+    count_index_files,
     ensure_index,
     finalize_view_partials,
     index_path_for,
-    ipc_to_pandas,
     normalize_arrow_dtypes,
     partial_arrow_view_groupby,
     resolve_trace_inputs,
-    scan_to_ipc,
+    typed_group_keys,
 )
-from dftracer.utils.dask import _assign_files_by_pid, register_auto_thread_plugin
+from dftracer.utils.dask import (
+    DaskTraceViewer,
+    ProgressAggregator,
+    assign_files_by_pid,
+    register_auto_thread_plugin,
+)
 from dask.distributed import Client, get_client
 from typing import Dict, List, Optional, Tuple
 
-from .analyzer import Analyzer, HLM_AGG, HLM_EXTRA_COLS
+from .analyzer import Analyzer
 from .analysis_utils import (
     build_view_rename_map,
     derive_call_stats,
@@ -39,7 +41,6 @@ from .analysis_utils import (
 )
 from betterframe import BetterFrame
 
-from .utils.dask_agg import unique_set, unique_set_flatten
 from .constants import (
     COL_ACC_PAT,
     COL_COUNT,
@@ -56,25 +57,9 @@ from .constants import (
     IOCategory,
 )
 from .types import ReadTraceResult, ViewType
-from .utils.log_utils import log_block
+from .utils.log_utils import current_progress, log_block
 
 logger = structlog.get_logger()
-
-# HLM groupby columns typed as Int64 (others string); metric columns typed as
-# Float64 (others Int64). Passed to the dftracer.utils HLM helpers.
-HLM_INT_INDEX_COLS = frozenset({"pid", "tid", "io_cat", "acc_pat", "time_range", "epoch", "step"})
-HLM_FLOAT_METRIC_COLS = frozenset(
-    {
-        "time",
-        "time_sq",
-        "time_min",
-        "time_max",
-        "time_call_min",
-        "time_call_max",
-        "time_start",
-        "time_end",
-    }
-)
 
 IGNORED_FILE_PATTERNS = [
     "/dev/",
@@ -247,7 +232,45 @@ class DFTracerAnalyzer(Analyzer):
 
     def analyze_trace(self, trace_path, *args, **kwargs):
         """Transparent indexing: ensure the dftracer index exists, then analyze."""
-        ensure_index(trace_path, self.trace_groups, self.time_granularity * 1000.0)
+        import time
+
+        from rich.progress import (
+            BarColumn,
+            MofNCompleteColumn,
+            Progress,
+            TextColumn,
+            TimeElapsedColumn,
+        )
+
+        from .utils.log_utils import console
+
+        t0 = time.time()
+        with Progress(
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            MofNCompleteColumn(),
+            TimeElapsedColumn(),
+            console=console,
+            transient=True,
+        ) as _bar:
+            _task = _bar.add_task("Indexing", total=None)
+            _phase = {"cur": "Indexing"}
+
+            def _on_progress(done: int, total: int, phase: str) -> None:
+                # One bar per phase; reset on a phase change so a 0 total pulses
+                # instead of showing the previous phase's frozen total.
+                if phase != _phase["cur"]:
+                    _phase["cur"] = phase
+                    _bar.reset(_task, total=(total or None), description=phase)
+                _bar.update(_task, completed=done, total=(total or None), description=phase)
+
+            ensure_index(
+                trace_path,
+                self.trace_groups,
+                self.time_granularity * 1000.0,
+                progress=_on_progress,
+            )
+        console.print(f"[green]✓[/green] Build index [i]({time.time() - t0:.3f}s)[/i]")
         return super().analyze_trace(trace_path, *args, **kwargs)
 
     @staticmethod
@@ -260,7 +283,7 @@ class DFTracerAnalyzer(Analyzer):
         all_file_ids = set(file_id_to_path.keys())
         full_file_pids = {fid: file_pids.get(fid, set()) for fid in all_file_ids}
         jobs = []
-        for fids in _assign_files_by_pid(full_file_pids, n_groups).values():
+        for fids in assign_files_by_pid(full_file_pids, n_groups).values():
             wfiles = [file_id_to_path[fid] for fid in fids if fid in file_id_to_path]
             if not wfiles:
                 continue
@@ -275,183 +298,32 @@ class DFTracerAnalyzer(Analyzer):
             jobs.append((wfiles, query))
         return jobs
 
-    def _scan_within_budget(self, dask_client, scan_plan, index_path, trace_files):
-        """Scan here, if the client will accept what the scan produces.
+    def _read_result_from_ipc(self, results):
+        """Build a ReadTraceResult from per-shard {events, profiles, system} IPC.
 
-        Measuring is this class's job because only it knows how a dftracer trace
-        is scanned and sized; deciding what to do with the number belongs to the
-        client, which owns the budget and the cluster (`AutoClient.accepts`).
-        Returns the per-group IPC payloads, or None if the client would rather
-        have a cluster -- by which point it has started one.
-
-        The scan is not subdivided to check the budget part-way through. Each
-        group is a separate full scan of the aggregation column family filtered
-        by pid, so splitting into N groups costs N sequential scans: measured at
-        roughly five times the read time on an eight-file fixture. A cluster
-        pays that cost in parallel; one process cannot. Scanning once and
-        measuring afterwards is the only version that is not slower than what it
-        replaces.
-
-        So the budget bounds what gets *processed* here, not what gets read in:
-        an oversized trace is aggregated once before being handed to the
-        cluster. `accepts_estimate` is the cheap guard for when even that is too
-        much to attempt.
+        The View-schema decode/relativize lives in dftracer.utils; here we only
+        wrap the frames as Dask and standardize the system metrics.
         """
-        on_disk = 0
-        for path in trace_files:
-            try:
-                on_disk += os.path.getsize(path)
-            except OSError:
-                continue
-        if not dask_client.accepts_estimate(on_disk):
-            return None
+        frames = build_read_frames(
+            results,
+            PROFILE_OUTPUT_COLUMNS,
+            self.time_granularity,
+            self.time_resolution,
+            self.profile_time_granularity,
+        )
+        self._time_origin = frames["time_origin"]
 
-        payloads = []
-        scanned_bytes = 0
-        for wfiles, query in scan_plan:
-            payload = scan_to_ipc(
-                wfiles,
-                index_path,
-                self.time_granularity,
-                self.time_resolution,
-                query,
-            )
-            scanned_bytes += sum(len(chunk) for chunk in payload.values() if chunk)
-            payloads.append(payload)
+        traces_pd = frames["traces"]
+        traces = dd.from_pandas(traces_pd, npartitions=max(1, len(traces_pd) // 100_000 + 1))
 
-        return payloads if dask_client.accepts(scanned_bytes) else None
+        profiles = None
+        if frames["profiles"] is not None:
+            profiles = dd.from_pandas(frames["profiles"], npartitions=1)
 
-    def read_trace_local(self, trace_path, extra_columns=None, extra_columns_fn=None):
-        """Read trace using C++ aggregation pipeline.
-
-        This is a faster alternative to read_trace() that uses the C++ Indexer
-        with fused aggregation to produce pre-aggregated data directly.
-        All transformation (hash resolution, time normalization, io_cat, proc_name)
-        is done in C++ for performance.
-
-        Args:
-            trace_path: Directory containing trace files or glob pattern.
-            extra_columns: Not used (kept for API compatibility).
-            extra_columns_fn: Not used (kept for API compatibility).
-
-        Returns:
-            ReadTraceResult with traces, profiles, and system_metrics.
-        """
-        with log_block("cpp_indexer_setup"):
-            # Configure aggregation to match analyzer time granularity
-            time_interval_ms = self.time_granularity * 1000.0  # seconds to ms
-
-            directory, files = resolve_trace_inputs(trace_path, self.trace_groups)
-
-            if not directory and not files:
-                raise FileNotFoundError("No matching .pfw or .pfw.gz files found.")
-
-            index_path = index_path_for(trace_path)
-            indexer = Indexer(
-                directory=directory,
-                files=files if files else None,
-                index_dir=os.path.dirname(index_path),
-                require_checkpoint=True,
-                require_bloom=True,
-                require_manifest=True,
-                require_aggregation=AggregationConfig(
-                    time_interval_ms=time_interval_ms,
-                    compute_percentiles=False,
-                ),
-                force_rebuild=False,
-            )
-
-        with log_block("cpp_ensure_indexed"):
-            status = indexer.ensure_indexed()
-            logger.info(
-                "C++ indexing complete",
-                total_files=status.total_files,
-                ready=len(status.ready),
-                needs_work=len(status.needs_work),
-            )
-
-        with log_block("cpp_load_hash_tables"):
-            # Store hash tables for compatibility with other methods
-            file_hashes = indexer.get_hash_table("file")
-            host_hashes = indexer.get_hash_table("host")
-            self._file_hashes = pd.DataFrame(
-                {"name": list(file_hashes.values())},
-                index=pd.Index(list(file_hashes.keys()), name="hash", dtype="string"),
-            )
-            self._host_hashes = pd.DataFrame(
-                {"name": list(host_hashes.values())},
-                index=pd.Index(list(host_hashes.keys()), name="hash", dtype="string"),
-            )
-            self._string_hashes = pd.DataFrame(columns=["name"])
-            self._metadata = pd.DataFrame(columns=["name", "value"])
-
-        with log_block("cpp_iter_arrow_dfanalyzer"):
-            all_batches = indexer.iter_arrow_dfanalyzer_all(
-                time_granularity=self.time_granularity,
-                time_resolution=self.time_resolution,
-            )
-            event_batches = [pa.record_batch(b) for b in all_batches.get("events", [])]
-            profile_batches = [pa.record_batch(b) for b in all_batches.get("profiles", [])]
-            system_batches = [pa.record_batch(b) for b in all_batches.get("system", [])]
-
-        with log_block("cpp_to_dask"):
-            # Convert Arrow batches to Dask DataFrames.
-            #
-            # Every table goes through `decode_dictionary_columns` first, which is
-            # what `ipc_to_pandas` does on the distributed path. Without it the
-            # C++ aggregator's dictionary-encoded columns land as pandas
-            # `category` rather than `string`; `normalize_arrow_dtypes` then
-            # demotes them to `object`, and arithmetic on object columns follows
-            # Python scalar rules -- so `count / time` raises ZeroDivisionError
-            # instead of yielding inf. The two read paths must agree on dtypes.
-            if event_batches:
-                events_table = decode_dictionary_columns(pa.Table.from_batches(event_batches))
-                events_pd = events_table.to_pandas()
-                # The distributed path derives this from the per-worker futures via
-                # `distributed_time_origin`; here the events are already local, so
-                # take the minimum directly. `_postread_hlm_config` skips time
-                # rebucketing entirely when it is unset, which silently bucketed
-                # `time_range` against a different origin than the distributed path.
-                self._time_origin = int(events_pd[COL_TIME_START].min()) if not events_pd.empty else None
-                traces = dd.from_pandas(
-                    events_pd,
-                    npartitions=max(1, len(event_batches) // 10),
-                )
-            else:
-                self._time_origin = None
-                traces = dd.from_pandas(
-                    pd.DataFrame(columns=list(PROFILE_OUTPUT_COLUMNS.keys())),
-                    npartitions=1,
-                )
-
-            if profile_batches:
-                profiles_table = decode_dictionary_columns(pa.Table.from_batches(profile_batches))
-                profile_window = int(self.profile_time_granularity * self.time_resolution)
-                profiles_pd = coerce_profile_dtypes(
-                    profiles_table.to_pandas(), PROFILE_OUTPUT_COLUMNS, profile_window=profile_window
-                )
-                profiles = dd.from_pandas(
-                    profiles_pd,
-                    npartitions=max(1, len(profile_batches) // 10),
-                )
-            else:
-                profiles = None
-
-            if system_batches:
-                system_table = decode_dictionary_columns(pa.Table.from_batches(system_batches))
-                system_pd = system_table.to_pandas()
-                # time_bucket is already the bucket-start timestamp in us
-                # (compute_time_bucket floors ts to the bucket boundary), so
-                # pin ts to it for stable (ts - origin)//bucket_width indexing.
-                system_pd["ts"] = system_pd["time_bucket"].astype("int64")
-                time_origin = int(system_pd["ts"].min()) if not system_pd.empty else 0
-                system_events = dd.from_pandas(
-                    system_pd,
-                    npartitions=max(1, len(system_batches) // 10),
-                )
-                system_metrics = self._standardize_system(system_events, time_origin=time_origin)
-            else:
-                system_metrics = None
+        system_metrics = None
+        if frames["system"] is not None:
+            system_events = dd.from_pandas(frames["system"], npartitions=1)
+            system_metrics = self._standardize_system(system_events, time_origin=frames["system_time_origin"])
 
         return ReadTraceResult(
             traces=traces,
@@ -460,11 +332,24 @@ class DFTracerAnalyzer(Analyzer):
             system_metrics=system_metrics,
         )
 
+    def read_trace_local(
+        self, trace_path, extra_columns=None, extra_columns_fn=None, group_by_file=True
+    ):
+        """In-process read: the same View-based path as read_trace, driven by a
+        NullClient so the scan runs in this process instead of on cluster workers.
+        One read path keeps the schema identical to the distributed read."""
+        from .cluster import NullClient
+
+        return self.read_trace(
+            trace_path, extra_columns, extra_columns_fn, group_by_file, client=NullClient()
+        )
+
     def read_trace(
         self,
         trace_path,
         extra_columns=None,
         extra_columns_fn=None,
+        group_by_file=True,
         client: Optional[Client] = None,
     ):
         """Read trace using C++ aggregation pipeline.
@@ -499,7 +384,6 @@ class DFTracerAnalyzer(Analyzer):
                 index_dir=os.path.dirname(index_path),
                 require_checkpoint=True,
                 require_bloom=True,
-                require_manifest=True,
                 require_aggregation=AggregationConfig(
                     time_interval_ms=time_interval_ms,
                     compute_percentiles=False,
@@ -534,11 +418,6 @@ class DFTracerAnalyzer(Analyzer):
             # against the client interface, so it runs unchanged either way -- with
             # NullClient there is exactly one "worker", this process, and `submit`
             # executes inline.
-            #
-            # Keeping one read path is what makes the HLM correct in-process:
-            # `distributed_hlm` is built from the very futures produced here, and
-            # returns None if there are none, silently falling back to a second
-            # implementation whose dtypes do not match.
             dask_client = client or getattr(self, "dask_client", None)
             if dask_client is None:
                 try:
@@ -547,201 +426,98 @@ class DFTracerAnalyzer(Analyzer):
                     dask_client = None
 
             if dask_client is None:
-                return self.read_trace_local(trace_path)
+                return self.read_trace_local(trace_path, group_by_file=group_by_file)
 
-            worker_nthreads = dask_client.nthreads()
-            n_workers = len(worker_nthreads) or 1
-            worker_list = list(worker_nthreads.keys())
+        # Feed per-shard scan progress into the enclosing "Read trace & stats"
+        # bar (published by the base analyzer's console_progress_block).
+        _scan_bar = current_progress()
 
-        event_futures = []
-        worker_scan_args = []
+        def _feed_scan(done, total, phase):
+            if _scan_bar is not None and phase == "Reading traces":
+                _scan_bar(done, total)
 
-        with log_block("submit_workers"):
-            scan_plan = self._plan_scan(file_id_to_path, file_pids, n_workers)
-
-            # cluster=auto: try the scan here first, and only start a cluster if
-            # the aggregated data turns out not to fit. Deciding needs the scan's
-            # actual output, so it cannot happen before this point.
-            prescanned = None
-            if getattr(dask_client, "can_promote", False):
-                prescanned = self._scan_within_budget(
-                    dask_client, scan_plan, index_path, file_id_to_path.values()
-                )
-                if prescanned is None:
-                    # Declining started the cluster; re-plan for its workers.
-                    worker_nthreads = dask_client.nthreads()
-                    n_workers = len(worker_nthreads) or 1
-                    worker_list = list(worker_nthreads.keys())
-                    scan_plan = self._plan_scan(file_id_to_path, file_pids, n_workers)
-
-            for scan_index, (wfiles, query) in enumerate(scan_plan):
-                if prescanned is not None:
-                    worker_addr = None
-                    future = prescanned[scan_index]
+        with ProgressAggregator(dask_client, _feed_scan):
+            with log_block("submit_workers"):
+                all_files = list(file_id_to_path.values())
+                tg, tr = self.time_granularity, self.time_resolution
+                _ignored = tuple(IGNORED_FILE_PATTERNS)
+                if group_by_file:
+                    _group_keys, _drop = typed_group_keys(), ()
                 else:
-                    worker_addr = worker_list[scan_index % len(worker_list)] if worker_list else None
-                    future = dask_client.submit(
-                        scan_to_ipc,
-                        wfiles,
-                        index_path,
-                        self.time_granularity,
-                        self.time_resolution,
-                        query,
-                        workers=[worker_addr] if worker_addr else None,
-                        pure=False,
-                    )
-                event_futures.append(future)
-                worker_scan_args.append((worker_addr, wfiles, query))
+                    # Ignore patterns bucket first: a file matching both must
+                    # fold to the ignore pattern or _drop cannot see it.
+                    _rules = tuple(path for path, _ in self.POSIX_CAT_RULES)
+                    _group_keys = typed_group_keys((*_ignored, *_rules))
+                    _drop = _ignored
+                viewer = DaskTraceViewer(all_files, index_path, client=dask_client)
 
-            self._worker_ipc_futures = event_futures
-            self._worker_scan_args = worker_scan_args
-            self._index_path = index_path
-            self._dask_client = dask_client
-            self._time_origin = distributed_time_origin(event_futures, dask_client)
-
-        with log_block("build_dask_dataframe"):
-            events_meta = pd.DataFrame(
-                {
-                    "cat": pd.Series(dtype="object"),
-                    COL_FUNC_NAME: pd.Series(dtype="object"),
-                    "pid": pd.Series(dtype="int64"),
-                    "tid": pd.Series(dtype="int64"),
-                    "file_hash": pd.Series(dtype="object"),
-                    "host_hash": pd.Series(dtype="object"),
-                    COL_FILE_NAME: pd.Series(dtype="object"),
-                    COL_HOST_NAME: pd.Series(dtype="object"),
-                    COL_PROC_NAME: pd.Series(dtype="object"),
-                    COL_IO_CAT: pd.Series(dtype="int64"),
-                    COL_ACC_PAT: pd.Series(dtype="int64"),
-                    COL_COUNT: pd.Series(dtype="int64"),
-                    COL_TIME: pd.Series(dtype="float64"),
-                    COL_SIZE: pd.Series(dtype="int64"),
-                    "time_min": pd.Series(dtype="float64"),
-                    "time_max": pd.Series(dtype="float64"),
-                    "size_min": pd.Series(dtype="int64"),
-                    "size_max": pd.Series(dtype="int64"),
-                    "offset_min": pd.Series(dtype="int64"),
-                    "offset_max": pd.Series(dtype="int64"),
-                    COL_TIME_RANGE: pd.Series(dtype="int64"),
-                    COL_TIME_START: pd.Series(dtype="int64"),
-                    COL_TIME_END: pd.Series(dtype="int64"),
-                }
-            )
-
-            def _extract_and_decode(ipc_future, key, meta):
-                ipc_bytes = ipc_future[key]
-                if ipc_bytes is None:
-                    return meta.iloc[:0].copy()
-                return ipc_to_pandas(ipc_bytes)
-
-            event_delayed = [
-                dask.delayed(_extract_and_decode)(dask.delayed(f), "events", events_meta) for f in event_futures
-            ]
-            traces = (
-                dd.from_delayed(event_delayed, meta=events_meta)
-                if event_delayed
-                else dd.from_pandas(events_meta, npartitions=1)
-            )
-
-            def _has_data(result_dict, key):
-                return result_dict[key] is not None
-
-            has_profiles_futures = [dask_client.submit(_has_data, f, "profiles", pure=False) for f in event_futures]
-            has_profiles = any(dask_client.gather(has_profiles_futures))
-
-            if has_profiles:
-                profile_delayed = [
-                    dask.delayed(_extract_and_decode)(dask.delayed(f), "profiles", events_meta) for f in event_futures
-                ]
-                profiles = dd.from_delayed(profile_delayed, meta=events_meta)
-                profile_window = int(self.profile_time_granularity * self.time_resolution)
-                profiles = profiles.map_partitions(
-                    coerce_profile_dtypes, PROFILE_OUTPUT_COLUMNS, profile_window=profile_window
-                )
-            else:
-                profiles = None
-
-            has_system_futures = [dask_client.submit(_has_data, f, "system", pure=False) for f in event_futures]
-            has_system = any(dask_client.gather(has_system_futures))
-            if has_system:
-                system_frames = dask_client.gather(
-                    [
-                        dask_client.submit(
-                            lambda d: ipc_to_pandas(d["system"]) if d.get("system") else None, f, pure=False
-                        )
-                        for f in event_futures
-                    ]
-                )
-                system_frames = [f for f in system_frames if f is not None and not f.empty]
-                if system_frames:
-                    system_pd = pd.concat(system_frames, ignore_index=True)
-                    system_pd["ts"] = system_pd["time_bucket"].astype("int64")
-                    time_origin = int(system_pd["ts"].min())
-                    system_events = dd.from_pandas(system_pd, npartitions=1)
-                    system_metrics = self._standardize_system(system_events, time_origin=time_origin)
+                # cluster=auto: aggregate in process and keep the result if it
+                # fits the client's budget; otherwise the client starts a cluster
+                # and we re-fan (`accepts_estimate`/`accepts` promote on decline).
+                results = None
+                if getattr(dask_client, "can_promote", False):
+                    on_disk = 0
+                    for p in all_files:
+                        try:
+                            on_disk += os.path.getsize(p)
+                        except OSError:
+                            pass
+                    if dask_client.accepts_estimate(on_disk):
+                        event_futures, worker_addrs = viewer.collect_typed_ipc_futures(tg, tr, _group_keys, _drop)
+                        gathered = dask_client.gather(event_futures)
+                        nbytes = sum(len(b) for r in gathered if r for b in r.values() if b)
+                        if dask_client.accepts(nbytes):
+                            results = gathered
+                    if results is None:
+                        viewer = DaskTraceViewer(all_files, index_path, client=dask_client)
+                        event_futures, worker_addrs = viewer.collect_typed_ipc_futures(tg, tr, _group_keys, _drop)
                 else:
-                    system_metrics = None
-            else:
-                system_metrics = None
+                    event_futures, worker_addrs = viewer.collect_typed_ipc_futures(tg, tr, _group_keys, _drop)
 
-        self._file_hashes = pd.DataFrame(columns=["name"])
-        self._host_hashes = pd.DataFrame(columns=["name"])
-        self._string_hashes = pd.DataFrame(columns=["name"])
-        self._metadata = pd.DataFrame(columns=["name", "value"])
+                worker_scan_args = [(addr, all_files, None) for addr in worker_addrs]
+                self._worker_ipc_futures = event_futures
+                self._worker_scan_args = worker_scan_args
+                self._index_path = index_path
+                self._all_files = all_files
+                self._dask_client = dask_client
 
-        return ReadTraceResult(
-            traces=traces,
-            profiles=profiles,
-            profile_time_granularity=self.profile_time_granularity if profiles is not None else None,
-            system_metrics=system_metrics,
-        )
-
-    def _postread_hlm_config(self, data_type):
-        """Postread transformations the distributed HLM must replicate."""
-        config: Dict[str, object] = {"posix_cat_rules": [list(rule) for rule in self.POSIX_CAT_RULES]}
-        if data_type == "events":
-            config["ignored_file_patterns"] = list(IGNORED_FILE_PATTERNS)
-            config["ignored_func_names"] = list(IGNORED_FUNC_NAMES)
-            config["ignored_func_patterns"] = list(IGNORED_FUNC_PATTERNS)
-            origin = getattr(self, "_time_origin", None)
-            if origin is not None:
-                config["time_origin"] = int(origin)
-                config["bucket_width_us"] = int(self.time_granularity * self.time_resolution)
-            # epoch view: pass the preset's epoch layer query so the distributed scan
-            # can assign per-pid epochs (mirrors postread_trace's assign_epochs, which
-            # the scan bypasses). Only meaningful when assign_epochs is enabled.
-            if self.assign_epochs and "epoch" in self.preset.layer_defs:
-                config["epoch_query"] = self.preset.layer_defs["epoch"]
-        return config
-
-    def _hlm(self, data_type, view_types, traces):
-        return distributed_hlm(
-            data_type,
-            view_types,
-            traces,
-            getattr(self, "_worker_ipc_futures", None),
-            getattr(self, "_worker_scan_args", []),
-            getattr(self, "_dask_client", None),
-            HLM_AGG,
-            HLM_EXTRA_COLS,
-            HLM_INT_INDEX_COLS,
-            HLM_FLOAT_METRIC_COLS,
-            self._postread_hlm_config(data_type),
-        )
+            with log_block("build_dask_dataframe"):
+                self._file_hashes = pd.DataFrame(columns=["name"])
+                self._host_hashes = pd.DataFrame(columns=["name"])
+                self._string_hashes = pd.DataFrame(columns=["name"])
+                self._metadata = pd.DataFrame(columns=["name", "value"])
+                if results is None:
+                    results = dask_client.gather(event_futures)
+            return self._read_result_from_ipc(results)
 
     def _compute_high_level_metrics(self, traces, view_types, partition_size):
-        result = self._hlm("events", view_types, traces)
-        if result is not None:
-            return result
-        return super()._compute_high_level_metrics(traces, view_types, partition_size)
+        return self._view_hlm(view_types)
+
+    def _view_hlm(self, view_types, profiles=False):
+        """Events (or, with profiles=True, profile) HLM via a
+        DFAnalyzerAggregatedTraceViewer, as a Dask DataFrame."""
+        from dask import delayed
+
+        cfg = HLMConfig(
+            posix_cat_rules=tuple((r[0], r[1]) for r in self.POSIX_CAT_RULES),
+            ignored_file_patterns=tuple(IGNORED_FILE_PATTERNS),
+            ignored_func_names=tuple(IGNORED_FUNC_NAMES),
+            ignored_func_patterns=tuple(IGNORED_FUNC_PATTERNS),
+            time_granularity=self.time_granularity,
+            time_resolution=self.time_resolution,
+        )
+        viewer = DFAnalyzerAggregatedTraceViewer(
+            self._all_files, self._index_path, client=self._dask_client, hlm_config=cfg
+        )
+        pdf = viewer.profile_hlm(list(view_types)) if profiles else viewer.hlm(list(view_types))
+        # from_delayed, not from_pandas: from_pandas calls index.isna(),
+        # unsupported for the HLM's MultiIndex.
+        return dd.from_delayed([delayed(pdf)], meta=pdf.iloc[:0])
 
     def _compute_profile_hlm(self, profiles, view_types, partition_size):
-        result = self._hlm("profiles", view_types, profiles)
-        if result is not None:
-            return result
         if profiles is None:
             return None
-        return super()._compute_profile_hlm(profiles, view_types, partition_size)
+        return self._view_hlm(view_types, profiles=True)
 
     def _compute_view(self, layer, records, view_key, view_type, view_types):
         from .constants import VIEW_TYPES
@@ -943,6 +719,15 @@ class DFTracerAnalyzer(Analyzer):
         return traces[COL_COUNT].sum().persist()
 
     def get_unique_file_count(self, traces: dd.DataFrame):
+        # From the index, so it stays exact no matter what grain the read
+        # folded to; summing the frame's per-group counts would instead count a
+        # file once per group it appears in. Ignored patterns must be passed or
+        # the count includes files the analysis dropped.
+        index_path = getattr(self, "_index_path", None)
+        if index_path:
+            return count_index_files(
+                getattr(self, "_all_files", []), index_path, tuple(IGNORED_FILE_PATTERNS)
+            )
         file_hash = traces["file_hash"]
         return file_hash[file_hash != ""].nunique()
 

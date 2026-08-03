@@ -4,13 +4,13 @@ The analyzer talks to a Dask client in a handful of places -- submitting scans,
 gathering partials, scheduling checkpoint writes. `NullClient` satisfies those
 calls inline so one code path serves both modes.
 
-The subtle failure this guards is not a crash but a silent divergence:
-`distributed_hlm` returns None when there are no worker futures, and the
-analyzer then falls back to `Analyzer._compute_high_level_metrics`, a second
-implementation whose dtypes differ (its time columns come back as `object`, so
-`count / time` raises ZeroDivisionError rather than yielding inf). Reading
-through the client rather than around it is what keeps a single HLM; a test
-that only checked "did it run" would not notice that regressing.
+The subtle failure this guards is not a crash but a silent divergence: if the
+View HLM is bypassed, the analyzer falls back to
+`Analyzer._compute_high_level_metrics`, a second implementation whose dtypes
+differ (its time columns come back as `object`, so `count / time` raises
+ZeroDivisionError rather than yielding inf). Reading through the client rather
+than around it is what keeps a single HLM; a test that only checked "did it
+run" would not notice that regressing.
 """
 
 import pathlib
@@ -109,7 +109,7 @@ def test_in_process_builds_no_cluster(tmp_path: pathlib.Path) -> None:
 
 
 @pytest.mark.smoke
-def test_in_process_uses_the_distributed_hlm(tmp_path: pathlib.Path, monkeypatch) -> None:
+def test_in_process_uses_the_view_hlm(tmp_path: pathlib.Path, monkeypatch) -> None:
     """The base-class HLM is the stale path -- reaching it is the regression."""
     called = []
     original = Analyzer._compute_high_level_metrics

@@ -14,8 +14,6 @@ pytest.importorskip("dask.distributed")
 pytest.importorskip("dftracer.analyzer.dftracer")
 pytest.importorskip("pyarrow")
 
-import pyarrow as pa  # noqa: E402
-
 from dftracer.analyzer.dftracer import DFTracerAnalyzer  # noqa: E402
 from dftracer.utils.dfanalyzer import build_index_distributed  # noqa: E402
 from dftracer.utils import AggregationConfig, Indexer  # noqa: E402
@@ -56,13 +54,12 @@ def _make_workload(root: str, n_files: int = 4, n_events: int = 200) -> list:
     return files
 
 
-def _read_agg_tables(indexer: Indexer) -> dict:
-    result = indexer.iter_arrow_dfanalyzer_all(time_granularity=1.0, time_resolution=1e6)
-    out = {}
-    for key in ("events", "profiles", "system"):
-        batches = [pa.record_batch(cap) for cap in result.get(key, [])]
-        out[key] = pa.Table.from_batches(batches) if batches else pa.table({})
-    return out
+def _read_agg_frames(files: list, index_path: str) -> dict:
+    """The dfanalyzer {events, profiles, system} frames read from the index via
+    the View typed read."""
+    from dftracer.utils.dfanalyzer import view_typed_frames
+
+    return view_typed_frames(files, index_path)
 
 
 def test_distributed_index_localcluster_matches_serial(tmp_path):
@@ -87,7 +84,7 @@ def test_distributed_index_localcluster_matches_serial(tmp_path):
     )
     serial_status = serial_idx.ensure_indexed()
     assert len(serial_status.ready) == len(serial_files)
-    serial_tables = _read_agg_tables(serial_idx)
+    serial_tables = _read_agg_frames(serial_files, str(serial_dir))
     serial_idx.close()
 
     index_path = str(dist_dir / ".dftindex")
@@ -122,19 +119,18 @@ def test_distributed_index_localcluster_matches_serial(tmp_path):
     assert len(dist_status.ready) == len(dist_files), (
         f"distributed index missed files: {dist_status.needs_work}"
     )
-    dist_tables = _read_agg_tables(dist_idx)
+    dist_tables = _read_agg_frames(dist_files, str(dist_dir))
     dist_idx.close()
 
     for key in ("events", "profiles", "system"):
-        assert dist_tables[key].num_rows == serial_tables[key].num_rows, (
-            f"{key}: distributed={dist_tables[key].num_rows} "
-            f"serial={serial_tables[key].num_rows}"
+        assert len(dist_tables[key]) == len(serial_tables[key]), (
+            f"{key}: distributed={len(dist_tables[key])} serial={len(serial_tables[key])}"
         )
 
     for key in ("events", "profiles"):
-        if "count" in serial_tables[key].column_names:
-            s_total = pa.compute.sum(serial_tables[key].column("count")).as_py()
-            d_total = pa.compute.sum(dist_tables[key].column("count")).as_py()
+        if "count" in serial_tables[key].columns:
+            s_total = int(serial_tables[key]["count"].sum())
+            d_total = int(dist_tables[key]["count"].sum())
             assert s_total == d_total, f"{key}: count sum differs {d_total} vs {s_total}"
 
 
