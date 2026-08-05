@@ -62,7 +62,7 @@ from .utils.dask_utils import flatten_column_names
 from .utils.expr_utils import extract_numerator_and_denominators
 from .utils.file_utils import ensure_dir
 from .utils.json_encoders import NpEncoder
-from .utils.log_utils import console_block, log_block
+from .utils.log_utils import console_block, console_progress_block, log_block
 from .utils.pandas_utils import to_nullable_numeric
 
 
@@ -346,12 +346,13 @@ class Analyzer(abc.ABC):
         profiles = None
         traces = None
         raw_stats = None
-        with console_block("Read trace & stats"):
+        with console_progress_block("Read trace & stats"):
             with log_block("read_trace"):
                 read_result = self.read_trace(
                     trace_path=trace_path,
                     extra_columns=extra_columns,
                     extra_columns_fn=extra_columns_fn,
+                    group_by_file=COL_FILE_NAME in proc_view_types,
                 )
                 traces = read_result.traces
                 profiles = read_result.profiles
@@ -496,6 +497,7 @@ class Analyzer(abc.ABC):
         trace_path: str,
         extra_columns: Optional[Dict[str, str]],
         extra_columns_fn: Optional[Callable[[dict], dict]],
+        group_by_file: bool = True,
     ) -> ReadTraceResult:
         """Reads I/O trace data from the specified path.
 
@@ -504,7 +506,6 @@ class Analyzer(abc.ABC):
 
         Args:
             trace_path: Path to the I/O trace file or directory.
-
         Returns:
             A ReadTraceResult containing the parsed I/O trace data and any
             additional native profile streams for the analyzer.

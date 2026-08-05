@@ -337,7 +337,13 @@ class DFTracerAnalyzerConfig(AnalyzerConfig):
 
 @dc.dataclass
 class ClusterConfig:
-    local_directory: Optional[str] = "/tmp/${hydra:job.name}-${oc.env:USER}/${oc.select:hydra.job.id,0}"
+    # Dask worker scratch dir, overridable via DFTRACER_DASK_LOCAL_DIR (then
+    # TMPDIR, then /tmp), under a per-job/user/run subpath.
+    local_directory: Optional[str] = (
+        "${oc.env:DFTRACER_DASK_LOCAL_DIR,${oc.env:TMPDIR,/tmp}}"
+        "/${oc.select:hydra.job.name,dftracer}-${oc.env:USER,anon}"
+        "/${oc.select:hydra.job.id,0}"
+    )
 
 
 @dc.dataclass

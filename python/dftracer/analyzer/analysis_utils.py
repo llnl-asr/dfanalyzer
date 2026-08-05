@@ -216,8 +216,10 @@ def set_proc_name_parts(df: pd.DataFrame):
 
 
 def set_size_bins(df: pd.DataFrame):
+    # `_sanitize_size_offset` replaces 0 with pd.NA, upcasting size to an
+    # object/nullable column; pd.cut raises on pd.NA. Coerce to float NaN first.
     size_bins = pd.cut(
-        df['size'],
+        pd.to_numeric(df['size'], errors='coerce'),
         bins=SIZE_BINS,
         labels=SIZE_BIN_SUFFIXES,
         right=True,
