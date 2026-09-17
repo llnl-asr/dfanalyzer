@@ -201,3 +201,14 @@ For more details, to report issues, or to contribute to DFAnalyzer, please refer
 ## Acknowledgments
 
 This work was performed under the auspices of the U.S. Department of Energy by Lawrence Livermore National Laboratory under Contract DE-AC52-07NA27344. This material is based upon work supported by the U.S. Department of Energy, Office of Science, Office of Advanced Scientific Computing Research under the DOE Early Career Research Program (LLNL-CONF-862440). Also, this research is supported in part by the National Science Foundation (NSF) under Grants OAC-2104013, OAC-2313154, and OAC-2411318.
+
+## License
+
+DFAnalyzer is distributed under the terms of the MIT license.
+All new contributions must be made under this license.
+
+See [LICENSE](LICENSE) and [NOTICE](NOTICE) for details.
+
+SPDX-License-Identifier: MIT
+
+LLNL-CODE-2024514 — Applied Storage Research (ASR)
