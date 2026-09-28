@@ -50,8 +50,8 @@ dfanalyzer-cluster = "dftracer.analyzer.cluster:main"
 
 [project.urls]
 documentation = "https://dfanalyzer.readthedocs.io/en/latest/"
-source = "https://github.com/LLNL/dfanalyzer"
-tracker = "https://github.com/LLNL/dfanalyzer/issues"
+source = "https://github.com/llnl-asr/dfanalyzer"
+tracker = "https://github.com/llnl-asr/dfanalyzer/issues"
 
 [tool.setuptools.packages.find]
 where = ["python"]

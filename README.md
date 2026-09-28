@@ -1,6 +1,6 @@
 # Data Flow Analyzer
 
-![Build and Test](https://github.com/LLNL/dfanalyzer/actions/workflows/ci.yml/badge.svg)
+![Build and Test](https://github.com/llnl-asr/dfanalyzer/actions/workflows/ci.yml/badge.svg)
 ![PyPI - Version](https://img.shields.io/pypi/v/dftracer-analyzer?label=PyPI)
 ![PyPI - Wheel](https://img.shields.io/pypi/wheel/dftracer-analyzer?label=Wheel)
 ![PyPI - Python Version](https://img.shields.io/pypi/pyversions/dftracer-analyzer?label=Python)
@@ -104,8 +104,8 @@ DFAnalyzer also provides a detailed breakdown of performance metrics for each la
 
 Beyond the human-readable summary, DFAnalyzer can emit **analysis facts** — compact,
 machine-readable bottleneck signals (`analyzer.fact-envelope.v1`) that
-[DFDiagnoser](https://github.com/LLNL/dfdiagnoser) turns into longitudinal findings
-and [DFOptimizer](https://github.com/LLNL/dfoptimizer) turns into tuning actions. Facts
+[DFDiagnoser](https://github.com/llnl-asr/dfdiagnoser) turns into longitudinal findings
+and [DFOptimizer](https://github.com/llnl-asr/dfoptimizer) turns into tuning actions. Facts
 are **opt-in** and additive: with `facts.enabled=false` (the default) the analysis
 output is unchanged.
 
@@ -194,7 +194,7 @@ Spatial views (`file_name`/`proc_name`) yield one-shot facts.
 For more details, to report issues, or to contribute to DFAnalyzer, please refer to the following resources:
 
 - **[Official DFAnalyzer Documentation](https://dfanalyzer.readthedocs.io/)**: For detailed usage, configuration options, and information about analyzers.
-- **[Issue Tracker](https://github.com/LLNL/dfanalyzer/issues)**: To report bugs or suggest new features.
+- **[Issue Tracker](https://github.com/llnl-asr/dfanalyzer/issues)**: To report bugs or suggest new features.
 - **[Contributing Guidelines](./CONTRIBUTING.md)**: For information on how to contribute to the project, including setting up a development environment and coding standards.
 - **[Citation File](./CITATION.cff)**: If you use DFAnalyzer in your research, please cite it using the information in this file.
 

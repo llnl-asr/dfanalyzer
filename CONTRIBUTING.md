@@ -6,7 +6,7 @@ First off, thank you for considering contributing to DFAnalyzer! We welcome any 
 
 ### Reporting Bugs
 
-If you encounter a bug, please report it by opening an issue on our [GitHub Issue Tracker](https://github.com/LLNL/dfanalyzer/issues).
+If you encounter a bug, please report it by opening an issue on our [GitHub Issue Tracker](https://github.com/llnl-asr/dfanalyzer/issues).
 
 When reporting a bug, please include:
 
@@ -18,7 +18,7 @@ When reporting a bug, please include:
 
 ### Suggesting Enhancements
 
-If you have an idea for a new feature or an improvement to an existing one, please open an issue on our [GitHub Issue Tracker](https://github.com/LLNL/dfanalyzer/issues) to discuss it.
+If you have an idea for a new feature or an improvement to an existing one, please open an issue on our [GitHub Issue Tracker](https://github.com/llnl-asr/dfanalyzer/issues) to discuss it.
 
 Please include:
 
@@ -31,7 +31,7 @@ Please include:
 
 We love pull requests! If you'd like to contribute code:
 
-1.  **Fork the Repository:** Start by forking the [main DFAnalyzer repository](https://github.com/LLNL/dfanalyzer).
+1.  **Fork the Repository:** Start by forking the [main DFAnalyzer repository](https://github.com/llnl-asr/dfanalyzer).
 2.  **Create a Branch:** Create a new branch in your fork for your changes (e.g., `git checkout -b feature/my-new-feature` or `bugfix/issue-123`).
 3.  **Make Your Changes:** Implement your feature or bug fix.
 4.  **Test Your Changes:** Ensure your changes pass all tests. You can run tests locally (see "Setting Up a Development Environment" below and refer to the test execution steps in `.github/workflows/ci.yml`).
@@ -59,7 +59,7 @@ ruff format .
 1.  **Clone the Repository:**
 
     ```bash
-    git clone https://github.com/LLNL/dfanalyzer.git
+    git clone https://github.com/llnl-asr/dfanalyzer.git
     cd dfanalyzer
     ```
 
