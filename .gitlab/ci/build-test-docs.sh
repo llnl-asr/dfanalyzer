@@ -37,7 +37,6 @@ $PODMAN run --rm --user 0:0 -v "$PWD:/ws" -w /ws -e TEST_TYPE="$TEST_TYPE" \
 '
 
 # Docs.
-# NOTE(gitlab-migration): docs/requirements.txt pins (sphinx 5.0.2, babel 2.10)
 # fail on newer Pythons (stdlib `cgi` removed), so unpinned equivalents are
 # installed here; requirements.txt is left untouched for ReadTheDocs.
 $PODMAN run --rm --user 0:0 -v "$PWD:/ws" -w /ws docker.io/library/python:3.11 bash -ec '
