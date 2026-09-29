@@ -142,6 +142,10 @@ class NullClient:
         """No workers, so no per-worker thread counts."""
         return {}
 
+    def scheduler_info(self, *args, **kwargs) -> dict:
+        """No scheduler, so no workers."""
+        return {"workers": {}}
+
     def run(self, fn, *args, **kwargs) -> dict:
         """Run a worker-setup function against this process instead."""
         return {"in-process": fn(*args, **kwargs)}

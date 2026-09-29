@@ -393,18 +393,10 @@ class DFTracerAnalyzer(Analyzer):
             status = indexer.ensure_indexed()
 
             if status.total_files == 0:
-                self._file_hashes = pd.DataFrame(columns=["name"])
-                self._host_hashes = pd.DataFrame(columns=["name"])
-                self._string_hashes = pd.DataFrame(columns=["name"])
-                self._metadata = pd.DataFrame(columns=["name", "value"])
-                return ReadTraceResult(
-                    traces=dd.from_pandas(
-                        pd.DataFrame(columns=list(PROFILE_OUTPUT_COLUMNS.keys())),
-                        npartitions=1,
-                    ),
-                    profiles=None,
-                    profile_time_granularity=None,
-                    system_metrics=None,
+                indexer.close()
+                raise FileNotFoundError(
+                    f"No .pfw or .pfw.gz files found directly in {trace_path} "
+                    "(subdirectories are not searched)."
                 )
 
         with log_block("query_file_info"):
