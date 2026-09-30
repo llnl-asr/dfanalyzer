@@ -111,3 +111,14 @@ def test_local_read_sets_time_origin(read_paths) -> None:
     assert local_origin == distributed_origin, (
         f"time origins differ: distributed={distributed_origin} local={local_origin}"
     )
+
+
+@pytest.mark.smoke
+def test_read_trace_rejects_dir_with_only_nested_traces(analyzer, tmp_path) -> None:
+    nested = tmp_path / "sub"
+    nested.mkdir()
+    src = next(pathlib.Path(TRACE_PATH).glob("*.pfw*"))
+    (nested / src.name).write_bytes(src.read_bytes())
+
+    with pytest.raises(FileNotFoundError, match="subdirectories are not searched"):
+        analyzer.read_trace(trace_path=str(tmp_path))
