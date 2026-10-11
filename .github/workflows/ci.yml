@@ -14,8 +14,40 @@ on:
         type: boolean
         default: false
 
+# A new push to the same branch or PR cancels the older run. Tag runs finish.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
 jobs:
+  # A workflow-level paths filter would leave a required check unreported on a
+  # docs-only PR. Filtering here keeps the workflow running, so `tests-ok`
+  # always reports.
+  changes:
+    runs-on: ubuntu-22.04
+    outputs:
+      code: ${{ steps.filter.outputs.code }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: filter
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            code:
+              - "python/**"
+              - "tests/**"
+              - "pyproject.toml"
+              - "setup.py"
+              - ".github/workflows/ci.yml"
+
   build-and-test:
+    needs: changes
+    # Tags and manual runs always test.
+    if: >-
+      needs.changes.outputs.code == 'true' ||
+      github.event_name == 'workflow_dispatch' ||
+      startsWith(github.ref, 'refs/tags/')
     strategy:
       fail-fast: false
       matrix:
@@ -122,3 +154,18 @@ jobs:
             .coverage
             coverage.xml
           retention-days: 7
+
+  # The one check to require in the branch rules. It passes when the tests pass
+  # or when no code changed.
+  tests-ok:
+    needs: [changes, build-and-test]
+    if: always()
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Check results
+        run: |
+          [ "${{ needs.changes.result }}" = "success" ] || exit 1
+          case "${{ needs.build-and-test.result }}" in
+            success|skipped) ;;
+            *) exit 1 ;;
+          esac
