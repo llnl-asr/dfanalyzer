@@ -3,19 +3,43 @@ name: Deploy
 on:
   release:
     types: [published]
+  # Every merge into develop publishes a <tag>.postN.dev0 prerelease.
+  push:
+    branches: [develop]
+    paths:
+      - "python/**"
+      - "pyproject.toml"
+  workflow_dispatch:
 
 permissions:
   contents: read
 
+# Serialise rather than cancel: cancelling mid-upload could leave a version
+# half published.
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   release-build:
     runs-on: ubuntu-22.04
+    outputs:
+      publish: ${{ steps.check.outputs.publish }}
     steps:
       - uses: actions/checkout@v4
         with:
           # setuptools_scm derives the version from tags, which a shallow
           # checkout would not have.
           fetch-depth: 0
+      # A develop push that lands exactly on a tag is a release: it is
+      # published through the release event, so the push run must not upload it.
+      - id: check
+        run: |
+          if [ "${{ github.event_name }}" = "push" ] && git describe --tags --exact-match --match 'v*' >/dev/null 2>&1; then
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          fi
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -34,6 +58,7 @@ jobs:
           name: release-dists
           path: dist/
   pypi-publish:
+    if: needs.release-build.outputs.publish == 'true'
     runs-on: ubuntu-22.04
     needs:
       - release-build
