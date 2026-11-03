@@ -73,7 +73,9 @@ This command picks the ``ai`` preset from the trace, analyzes it and prints a hi
    │ POSIX - Checkpoint Avg Transfer Size                                           │ MB                │                0.001 │
    └────────────────────────────────────────────────────────────────────────────────┴───────────────────┴──────────────────────┘
 
-DFAnalyzer also provides a detailed breakdown of performance metrics for each layer of the application. Here is a snippet of the "Layer Breakdown" section from the same run, which includes the percentage of time each layer overlaps with its parent layer:
+For explanations of these rows, units, and rates, see :doc:`interpreting-summary`.
+
+DFAnalyzer also provides a detailed breakdown of performance metrics for each layer of the application. Here is a snippet of the "Layer Breakdown" section from the same run, including estimated overlap with compute for supported asynchronous layers:
 
 .. code-block:: none
 
