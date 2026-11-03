@@ -12,6 +12,7 @@ Welcome to DFAnalyzer's documentation!
 
    overview
    getting-started
+   interpreting-summary
    configuration
    metrics
    interactive-analysis
