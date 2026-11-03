@@ -187,12 +187,14 @@ with its POSIX subset to decide what to investigate next, without treating the
 times as disjoint pieces of Job Time. Likewise, do not add ``POSIX - Reader``
 Size to ``POSIX - All`` Size: those reader bytes are already included in All.
 
-Understand the Parenthesized Overlap Percentages
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Understand the Estimated Compute Overlap Column
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-When multiple layers are present, the breakdown title becomes
-``Layer Breakdown (w/ overlap %)``. A cell such as ``23.415 (45%)`` contains
-the original value followed by an estimated overlap percentage.
+When overlap metrics are available for a displayed layer, the breakdown includes
+an ``Est. compute overlap`` column. For example, a layer with Time = 23.415
+seconds and estimated compute overlap = 45% has approximately 55% of its
+summary layer time classified as unoverlapped. Time, Ops, and Size are shown
+without parenthesized percentages.
 
 For configured asynchronous layers with compute metrics available, DFAnalyzer
 first calculates unoverlapped time within each group:
@@ -208,13 +210,10 @@ share of its parent and is not calculated from exact intersections of event
 intervals. A high value suggests that compute may hide asynchronous work, but
 does not establish that the work was fully hidden in execution.
 
-The Ops and Size percentages use a different calculation. They report the
-fraction of operations or bytes belonging to groups where computed unoverlapped
-time is zero. They do not measure the exact fraction of individual calls or
-bytes that overlapped compute. Their values depend on the view and grouping.
-
-``(----)`` means the percentage is unavailable or the displayed total is zero;
-it does not mean zero overlap. A dash in a value cell can mean zero or an
+``N/A`` in the overlap column means the percentage is unavailable or the layer
+time is zero; it does not mean zero overlap. The column is omitted entirely
+when no displayed layer has overlap metrics, as in the standard POSIX preset.
+A dash in a value cell can mean zero or an
 inapplicable quantity, such as Size for a compute layer. Rates may display
 ``nan`` when their denominator is zero or their inputs are unavailable.
 
