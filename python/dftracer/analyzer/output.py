@@ -36,6 +36,7 @@ class OutputLayerMetrics:
     u_time: Optional[float]
     u_count: Optional[int]
     u_size: Optional[float]
+    data_count: Optional[int] = None
 
 
 @dc.dataclass
@@ -99,6 +100,7 @@ class Output(abc.ABC):
             times = flat_view.get(f"{layer}_{time_metric}", pd.Series([0.0]))
             time = times.max() if is_process_based else times.sum()
             count = flat_view.get(f"{layer}_count_sum", pd.Series([0])).sum()
+            data_count = flat_view.get(f"{layer}_data_count_sum", pd.Series(dtype='Float64')).sum(min_count=1)
             size = None
             if 'posix' in layer:
                 size = flat_view.get(f"{layer}_size_sum", pd.Series([0.0])).sum()
@@ -130,6 +132,7 @@ class Output(abc.ABC):
                 u_time=None if pd.isna(u_time) else float(u_time),
                 u_count=None if pd.isna(u_count) else int(u_count),
                 u_size=None if pd.isna(u_size) else float(u_size),
+                data_count=None if pd.isna(data_count) else int(data_count),
             )
         return summary
 
@@ -281,10 +284,14 @@ class ConsoleOutput(Output):
                 continue
             summary_table.add_row(f"{layer_name} Count", 'count', f"{layer_metrics.count:,}")
             if layer_metrics.size > 0:
-                avg_xfer_size = layer_metrics.size / layer_metrics.count
+                avg_xfer_size = (
+                    f"{layer_metrics.size / layer_metrics.data_count / MiB:.3f}"
+                    if layer_metrics.data_count is not None and layer_metrics.data_count > 0
+                    else 'N/A'
+                )
                 summary_table.add_row(f"{layer_name} Size", 'MB', f"{layer_metrics.size / MiB:.3f}")
                 summary_table.add_row(f"{layer_name} Bandwidth", 'MB/s', f"{layer_metrics.bandwidth / MiB:.3f}")
-                summary_table.add_row(f"{layer_name} Avg Transfer Size", 'MB', f"{avg_xfer_size / MiB:.3f}")
+                summary_table.add_row(f"{layer_name} Avg Transfer Size", 'MB', avg_xfer_size)
 
         return summary_table
 
