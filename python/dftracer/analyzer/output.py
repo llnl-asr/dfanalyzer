@@ -214,48 +214,47 @@ class ConsoleOutput(Output):
         return table
 
     def _create_layer_breakdown_table(self, summary: OutputSummary, view_key: ViewKey) -> Table:
-        breakdown_table_title = "Layer Breakdown"
-        show_overlap = False
-        if len(summary.layers) > 1:
-            breakdown_table_title += " (w/ overlap %)"
-            show_overlap = True
-        breakdown_table = Table(title=breakdown_table_title, title_style="bold cyan", expand=True)
+        show_overlap = any(
+            summary.layer_metrics[layer].count > 0 and summary.layer_metrics[layer].u_time is not None
+            for layer in summary.layers
+        )
+        breakdown_table = Table(title="Layer Breakdown", title_style="bold cyan", expand=True)
         breakdown_table.add_column("Layer", style="bold")
         breakdown_table.add_column("Time (s)", justify="right")
         breakdown_table.add_column("Ops", justify="right")
         breakdown_table.add_column("Ops/sec", justify="right")
         breakdown_table.add_column("Size (MB)", justify="right")
         breakdown_table.add_column("Bandwidth (MB/s)", justify="right")
+        if show_overlap:
+            breakdown_table.add_column("Est. compute overlap", justify="right")
+            breakdown_table.caption = (
+                "Estimated compute overlap compares grouped durations, not exact event intersections."
+            )
         for layer in summary.layers:
             layer_metrics = summary.layer_metrics[layer]
             if layer_metrics.count == 0:
                 continue
-            if show_overlap:
-                time_str = self._format_val_with_ovlp_pct(layer_metrics.time, layer_metrics.u_time)
-                count_str = self._format_val_with_ovlp_pct(layer_metrics.count, layer_metrics.u_count, fmt_int=True)
-            else:
-                time_str = self._format_val(layer_metrics.time)
-                count_str = self._format_val(layer_metrics.count, fmt_int=True)
+            time_str = self._format_val(layer_metrics.time)
+            count_str = self._format_val(layer_metrics.count, fmt_int=True)
             size_str = '-'
             if not pd.isna(layer_metrics.size):
                 size_value = layer_metrics.size / MiB
-                u_size_value = layer_metrics.u_size / MiB if layer_metrics.u_size is not None else None
-                if show_overlap:
-                    size_str = self._format_val_with_ovlp_pct(size_value, u_size_value)
-                else:
-                    size_str = self._format_val(size_value)
+                size_str = self._format_val(size_value)
             ops_str = f"{layer_metrics.ops:.3f}"
             bandwidth_str = '-'
             if not pd.isna(layer_metrics.bandwidth):
                 bandwidth_str = f"{layer_metrics.bandwidth / MiB:.3f}"
-            breakdown_table.add_row(
+            row = [
                 self._humanized_layer_name(layer),
                 time_str,
                 count_str,
                 ops_str,
                 size_str,
                 bandwidth_str,
-            )
+            ]
+            if show_overlap:
+                row.append(self._format_overlap_pct(layer_metrics.time, layer_metrics.u_time))
+            breakdown_table.add_row(*row)
         return breakdown_table
 
     def _create_summary_table(self, summary: OutputSummary, view_key: ViewKey) -> Table:
@@ -339,17 +338,12 @@ class ConsoleOutput(Output):
             return f"{int(value):,}"
         return f"{value:.3f}"
 
-    def _format_val_with_ovlp_pct(self, value, u_value, fmt_int=False):
-        value = value or 0
-        if value == 0 or u_value is None:
-            value = self._format_val(value, fmt_int)
-            return f"{value} (" + ('-' * 4) + ")"
-        u_value = u_value or 0
-        ovlp_pct = max(0.0, 1.0 - (u_value / value))
-        padded_percent = f"{int(round(ovlp_pct * 100)):>3d}%"
+    def _format_overlap_pct(self, time: float, u_time: Optional[float]) -> str:
+        if u_time is None or not np.isfinite(time) or time <= 0 or not np.isfinite(u_time):
+            return 'N/A'
+        ovlp_pct = max(0.0, min(1.0, 1.0 - u_time / time))
         color = self._percentage_color(ovlp_pct)
-        value = self._format_val(value, fmt_int)
-        return f"{value} ([{color}]{padded_percent}[/{color}])"
+        return f"[{color}]{ovlp_pct:.0%}[/{color}]"
 
     def _percentage_color(self, percentage: float) -> str:
         """
