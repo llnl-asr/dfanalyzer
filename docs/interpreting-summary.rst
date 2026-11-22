@@ -74,8 +74,9 @@ Read the Summary Rows
    * - <Layer> Bandwidth
      - Layer Size divided by the layer time used in the breakdown below.
    * - <Layer> Avg Transfer Size
-     - Layer Size divided by Layer Count. The denominator includes all operations
-       in the layer, including metadata calls, rather than only reads and writes.
+     - Layer Size divided by the layer's data-operation count
+       (``<layer>_data_count_sum``), which includes reads and writes and excludes
+       metadata operations. Displays ``N/A`` when that count is missing or zero.
 
 The global rows come from loaded input statistics, while the per-layer rows come
 from the selected view. Filtering and layer selection can therefore make the
@@ -138,17 +139,19 @@ contribute repeatedly to Size, so Size is not the unique dataset size or a
 measurement of physical storage traffic below caches.
 
 For example, suppose a process-view summary has Job Time = 20 seconds and the
-breakdown shows POSIX Time = 4 seconds, Ops = 1,000, and Size = 200 MB. Then:
+breakdown shows POSIX Time = 4 seconds, Ops = 1,000, and Size = 200 MB.
+Suppose 800 of those operations are reads or writes and 200 are metadata calls.
+Then:
 
 * Bandwidth is 200 / 4 = 50 MB/s.
 * Ops/sec is 1,000 / 4 = 250.
-* Avg Transfer Size is 200 / 1,000 = 0.200 MB, including metadata calls in the
+* Avg Transfer Size is 200 / 800 = 0.250 MB, excluding metadata calls from the
   denominator.
 * Bytes per job elapsed second would be 200 / 20 = 10 MB/s.
 
-These are illustrative values, not benchmark targets. A low average size can
-reflect small transfers, many metadata operations, or both. Use the read, write,
-and metadata metric families in :doc:`metrics` to distinguish them. The POSIX
+These are illustrative values, not benchmark targets. A low average transfer
+size indicates small reads or writes. Use the read, write, and metadata metric
+families in :doc:`metrics` to inspect the operation mix. The POSIX
 preset alone cannot tell how I/O relates to training or compute phases.
 
 AI: Read the Application Context

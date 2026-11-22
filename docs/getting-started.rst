@@ -62,15 +62,15 @@ This command picks the ``ai`` preset from the trace, analyzes it and prints a hi
    │ POSIX - All Count                                                              │ count             │              124,025 │
    │ POSIX - All Size                                                               │ MB                │            28757.953 │
    │ POSIX - All Bandwidth                                                          │ MB/s              │             1228.160 │
-   │ POSIX - All Avg Transfer Size                                                  │ MB                │                0.232 │
+   │ POSIX - All Avg Transfer Size                                                  │ MB                │                3.594 │
    │ POSIX - Reader Count                                                           │ count             │              124,004 │
    │ POSIX - Reader Size                                                            │ MB                │            28757.942 │
    │ POSIX - Reader Bandwidth                                                       │ MB/s              │             1234.529 │
-   │ POSIX - Reader Avg Transfer Size                                               │ MB                │                0.232 │
+   │ POSIX - Reader Avg Transfer Size                                               │ MB                │                3.595 │
    │ POSIX - Checkpoint Count                                                       │ count             │                   10 │
    │ POSIX - Checkpoint Size                                                        │ MB                │                0.011 │
    │ POSIX - Checkpoint Bandwidth                                                   │ MB/s              │                1.043 │
-   │ POSIX - Checkpoint Avg Transfer Size                                           │ MB                │                0.001 │
+   │ POSIX - Checkpoint Avg Transfer Size                                           │ MB                │                0.011 │
    └────────────────────────────────────────────────────────────────────────────────┴───────────────────┴──────────────────────┘
 
 For explanations of these rows, units, and rates, see :doc:`interpreting-summary`.
