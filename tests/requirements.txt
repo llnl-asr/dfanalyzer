@@ -1,5 +1,6 @@
 coverage
-pytest
+# pytest-forked cannot serialize the NodeId report field introduced in pytest 9.2.
+pytest<9.2
 pytest-cov
 pytest-forked
 py>=1.11
