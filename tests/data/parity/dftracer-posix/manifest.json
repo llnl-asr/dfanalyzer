@@ -1,0 +1,72 @@
+{
+ "views": [
+  {
+   "layer": "posix",
+   "view_key": [
+    "proc_name"
+   ],
+   "view_type": "proc_name",
+   "view_types": [
+    "proc_name",
+    "time_range"
+   ],
+   "logical_views": {
+    "file_name": [
+     "file_dir",
+     "file_pattern"
+    ],
+    "proc_name": [
+     "host_name",
+     "proc_id",
+     "thread_id"
+    ]
+   },
+   "time_sliced": false
+  },
+  {
+   "layer": "posix",
+   "view_key": [
+    "time_range"
+   ],
+   "view_type": "time_range",
+   "view_types": [
+    "proc_name",
+    "time_range"
+   ],
+   "logical_views": {
+    "file_name": [
+     "file_dir",
+     "file_pattern"
+    ],
+    "proc_name": [
+     "host_name",
+     "proc_id",
+     "thread_id"
+    ]
+   },
+   "time_sliced": false
+  }
+ ],
+ "mains": [
+  {
+   "layer": "posix",
+   "view_types": [
+    "proc_name",
+    "time_range"
+   ],
+   "time_sliced": false
+  }
+ ],
+ "flat": [
+  {
+   "view_key": [
+    "proc_name"
+   ]
+  },
+  {
+   "view_key": [
+    "time_range"
+   ]
+  }
+ ]
+}

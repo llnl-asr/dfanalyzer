@@ -2,7 +2,7 @@ import pandas as pd
 import pytest
 from betterset import BetterSet as S
 
-from dftracer.analyzer.utils.collection_utils import is_set_like_series
+from tests.pandas_reference import is_set_like_series
 
 pytestmark = [pytest.mark.smoke, pytest.mark.full]
 

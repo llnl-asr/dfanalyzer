@@ -15,19 +15,23 @@ Two failure modes are easy to miss and are covered here:
   close to the default budget. `cluster.max_bytes` is forced down to trigger it.
 """
 
+import gc
 import pathlib
+import weakref
+
 import pytest
-from dftracer.analyzer import init_with_hydra
+from dask.distributed import Client, LocalCluster
+from dftracer.analyzer import cluster as cluster_module
+from dftracer.analyzer import init_with_hydra, trace_index
 from dftracer.analyzer.cluster import AutoClient, AutoCluster
 from pandas.testing import assert_frame_equal
 
-
 # 8 files across several pids, so the escalated run is a real multi-worker scan.
-TRACE_PATH = "tests/data/extracted/dftracer-dlio"
+TRACE_NAME = "dftracer-dlio"
 PRESET = "ai"
 
 
-def _overrides(tmp_path: pathlib.Path, extra):
+def _overrides(tmp_path: pathlib.Path, trace_path: str, extra):
     return [
         "analyzer=dftracer",
         f"analyzer/preset={PRESET}",
@@ -36,7 +40,7 @@ def _overrides(tmp_path: pathlib.Path, extra):
         *extra,
         f"hydra.run.dir={tmp_path}",
         f"hydra.runtime.output_dir={tmp_path}",
-        f"trace_path={TRACE_PATH}",
+        f"trace_path={trace_path}",
         "view_types=[time_range,proc_name]",
     ]
 
@@ -47,7 +51,7 @@ def _analyze(overrides):
     try:
         result = dfa.analyze_trace()
         return (
-            {key: view.copy() for key, view in result.flat_views.items()},
+            {key: view.to_pandas(nullable=True) for key, view in result.flat_views.items()},
             bool(getattr(dfa.client, "is_distributed", True)),
         )
     finally:
@@ -55,7 +59,7 @@ def _analyze(overrides):
 
 
 @pytest.fixture(scope="module")
-def runs(tmp_path_factory):
+def runs(tmp_path_factory, module_trace_copy):
     """Every analysis this module needs, run once, in an order that works.
 
     Closing a Dask client shuts the dftracer C++ runtime down in this process,
@@ -65,12 +69,22 @@ def runs(tmp_path_factory):
     have to precede the clustered baseline.
     """
     tmp_path = tmp_path_factory.mktemp("auto")
-    fits_views, fits_promoted = _analyze(_overrides(tmp_path / "fits", ["cluster=auto"]))
+    fits_views, fits_promoted = _analyze(
+        _overrides(tmp_path / "fits", module_trace_copy(TRACE_NAME), ["cluster=auto"])
+    )
     big_views, big_promoted = _analyze(
-        _overrides(tmp_path / "big", ["cluster=auto", "cluster.max_bytes=1", "cluster.n_workers=2"])
+        _overrides(
+            tmp_path / "big",
+            module_trace_copy(TRACE_NAME),
+            ["cluster=auto", "cluster.max_bytes=1", "cluster.n_workers=2"],
+        )
     )
     clustered_views, _ = _analyze(
-        _overrides(tmp_path / "local", ["cluster=local", "cluster.n_workers=2", "cluster.processes=False"])
+        _overrides(
+            tmp_path / "local",
+            module_trace_copy(TRACE_NAME),
+            ["cluster=local", "cluster.n_workers=2", "cluster.processes=False"],
+        )
     )
     return {
         "fits": (fits_views, fits_promoted),
@@ -80,8 +94,8 @@ def runs(tmp_path_factory):
 
 
 @pytest.mark.smoke
-def test_auto_is_the_default() -> None:
-    dfa = init_with_hydra(hydra_overrides=["analyzer=dftracer", f"trace_path={TRACE_PATH}"])
+def test_auto_is_the_default(trace_copy) -> None:
+    dfa = init_with_hydra(hydra_overrides=["analyzer=dftracer", f"trace_path={trace_copy(TRACE_NAME)}"])
     try:
         assert isinstance(dfa.cluster, AutoCluster), f"default cluster is {type(dfa.cluster).__name__}"
     finally:
@@ -89,9 +103,9 @@ def test_auto_is_the_default() -> None:
 
 
 @pytest.mark.smoke
-def test_auto_adopts_the_entrypoint_client(tmp_path: pathlib.Path) -> None:
+def test_auto_adopts_the_entrypoint_client(tmp_path: pathlib.Path, trace_copy) -> None:
     """A self-resolved client cannot promote, so auto would degrade to none."""
-    dfa = init_with_hydra(hydra_overrides=_overrides(tmp_path, ["cluster=auto"]))
+    dfa = init_with_hydra(hydra_overrides=_overrides(tmp_path, trace_copy(TRACE_NAME), ["cluster=auto"]))
     try:
         assert isinstance(dfa.client, AutoClient)
         assert dfa.analyzer.dask_client is dfa.client, "analyzer did not adopt the entrypoint's client"
@@ -131,3 +145,82 @@ def test_auto_agrees_with_a_cluster(runs) -> None:
                 rtol=1e-9,
                 obj=f"flat view {view_key} ({label})",
             )
+
+
+class _Payload:
+    """A weak-referenceable stand-in for a gathered result."""
+
+
+class _FakeClient:
+    def __init__(self, cluster):
+        self.cluster = cluster
+
+    def gather(self, futures):
+        return futures
+
+
+class _FakeCluster:
+    def close(self):
+        pass
+
+
+def _fake_auto_client(monkeypatch, calls):
+    monkeypatch.setattr(cluster_module, "Client", _FakeClient)
+    monkeypatch.setattr(AutoCluster, "build_cluster", lambda self: _FakeCluster())
+    monkeypatch.setattr(cluster_module, "register_auto_thread_plugin", lambda: calls.append("registered"))
+    client = AutoClient(AutoCluster())
+    client._impl.gather = lambda futures: futures
+    return client
+
+
+@pytest.mark.smoke
+def test_over_budget_result_is_released_before_the_rerun(monkeypatch) -> None:
+    calls = []
+    client = _fake_auto_client(monkeypatch, calls)
+    monkeypatch.setattr(AutoClient, "_fits", lambda self, nbytes: False)
+    refs = []
+
+    def submit():
+        if refs:
+            gc.collect()
+            assert refs[0]() is None, "the rejected result is still alive during the rerun"
+            return "second"
+        payload = _Payload()
+        refs.append(weakref.ref(payload))
+        return payload
+
+    assert client.gather_within_budget(submit, lambda: 0, lambda results: 1) == "second"
+    assert len(refs) == 1
+
+
+@pytest.mark.smoke
+def test_promote_registers_the_thread_plugin(monkeypatch) -> None:
+    calls = []
+    client = _fake_auto_client(monkeypatch, calls)
+    client.promote()
+    client.promote()
+    assert calls == ["registered"]
+
+
+@pytest.mark.smoke
+def test_none_cluster_ignores_the_ambient_client_for_the_index(
+    tmp_path: pathlib.Path, trace_copy, monkeypatch
+) -> None:
+    seen = []
+    real = trace_index.build_index_distributed
+
+    def spy(*args, **kwargs):
+        seen.append(kwargs.get("client"))
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(trace_index, "build_index_distributed", spy)
+    ambient = Client(LocalCluster(processes=False, n_workers=1, dashboard_address=None))
+    try:
+        dfa = init_with_hydra(hydra_overrides=_overrides(tmp_path, trace_copy(TRACE_NAME), ["cluster=none"]))
+        try:
+            dfa.analyze_trace()
+        finally:
+            dfa.shutdown()
+    finally:
+        ambient.close()
+    assert seen and all(client is None for client in seen), f"index built on {seen}"

@@ -68,7 +68,7 @@ def test_detect_preset_without_traces_raises(tmp_path):
 def test_library_logging_is_quiet_by_default_and_switchable():
     from dftracer.analyzer.config import Config
     from dftracer.analyzer.utils.log_utils import configure_library_logging
-    from dftracer.utils import get_log_level
+    from dftracer.utils.runtime import get_log_level
 
     assert Config.log_level == "warn"
     try:
@@ -277,7 +277,7 @@ def test_init_with_hydra_explicit_preset_wins(tmp_path):
 
 
 def test_init_with_hydra_silences_library_logs(tmp_path):
-    from dftracer.utils import get_log_level
+    from dftracer.utils.runtime import get_log_level
 
     trace = write_flavor_trace(tmp_path / "trace", "posix")
     instance = init_notebook_style(trace, tmp_path / "run")

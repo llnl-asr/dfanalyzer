@@ -3,10 +3,18 @@ import pandas as pd
 import pytest
 from betterset import BetterSet as S
 
-from dftracer.analyzer.analyzer import Analyzer
-from dftracer.analyzer.utils.dask_agg import unique_set_flatten
+from dftracer.utils import DataFrame, col
+
+from .pandas_reference import set_layer_metrics
 
 pytestmark = [pytest.mark.smoke, pytest.mark.full]
+
+
+def _atoms(cell) -> list:
+    """The values of a set cell, or of one value, as a list; a missing value is an empty list."""
+    if isinstance(cell, (set, frozenset, list, tuple)):
+        return [v.item() if hasattr(v, "item") else v for v in cell if not pd.isna(v)]
+    return [] if pd.isna(cell) else [cell.item() if hasattr(cell, "item") else cell]
 
 
 DERIVED_METRICS = {
@@ -35,7 +43,7 @@ def _build_hlm_df(n_rows: int = 30_000) -> pd.DataFrame:
 
 def test_set_layer_metrics_correctness() -> None:
     hlm = _build_hlm_df(n_rows=2_000)
-    out = Analyzer.set_layer_metrics(
+    out = set_layer_metrics(
         hlm=hlm,
         derived_metrics=DERIVED_METRICS,
         size_derived_metrics=SIZE_DERIVED_METRICS,
@@ -67,7 +75,7 @@ def test_set_layer_metrics_correctness() -> None:
     assert str(out["write_time"].dtype) == "Float64"
 
     # String-derived columns carry original values for matching rows and missing values otherwise.
-    # Downstream unique_set_flatten skips missing values.
+    # The set union downstream skips missing values.
     assert (out.loc[read_mask, "read_func_name"] == hlm.loc[read_mask, "func_name"]).all()
     assert out.loc[~read_mask, "read_func_name"].isna().all()
     assert (out.loc[metadata_mask, "metadata_func_name"] == hlm.loc[metadata_mask, "func_name"]).all()
@@ -85,7 +93,7 @@ def test_set_layer_metrics_preserves_betterset_columns() -> None:
             ),
         }
     )
-    out = Analyzer.set_layer_metrics(
+    out = set_layer_metrics(
         hlm=hlm,
         derived_metrics=DERIVED_METRICS,
         size_derived_metrics=SIZE_DERIVED_METRICS,
@@ -96,9 +104,14 @@ def test_set_layer_metrics_preserves_betterset_columns() -> None:
         assert out.at[idx, "read_file_name"] == hlm.at[idx, "file_name"]
     assert out.loc[~read_mask, "read_file_name"].isna().all()
 
-    flatten_agg = unique_set_flatten()
-    chunked = flatten_agg.chunk(out.groupby("group")["read_file_name"])
-    aggregated = flatten_agg.agg(chunked.groupby(level=0))
+    cells = DataFrame.from_dict(
+        {"group": out["group"].tolist(), "read_file_name": [_atoms(v) for v in out["read_file_name"]]}
+    )
+    aggregated = (
+        cells.group_by(["group"])
+        .agg(read_file_name=col("read_file_name").set_union(typed=True))
+        .to_pandas(index=["group"])["read_file_name"]
+    )
     assert set(aggregated.loc["g0"]) == {"a"}
     assert set(aggregated.loc["g1"]) == {"c"}
 
@@ -107,7 +120,7 @@ def test_set_layer_metrics_perf_smoke() -> None:
     hlm = _build_hlm_df(n_rows=50_000)
     out = None
     for _ in range(8):
-        out = Analyzer.set_layer_metrics(
+        out = set_layer_metrics(
             hlm=hlm,
             derived_metrics=DERIVED_METRICS,
             size_derived_metrics=SIZE_DERIVED_METRICS,

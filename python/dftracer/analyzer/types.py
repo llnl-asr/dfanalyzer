@@ -1,10 +1,12 @@
-import dask.dataframe as dd
+from __future__ import annotations
+
 import dataclasses as dc
 import hashlib
 import json
-import pandas as pd
 from enum import Enum
 from typing import Any, Dict, List, Literal, Optional, Union, Tuple
+
+from dftracer.utils import DataFrame
 
 from .constants import HUMANIZED_METRICS, HUMANIZED_VIEW_TYPES, Layer
 
@@ -42,23 +44,23 @@ class AnalysisRuntimeConfig:
 
 @dc.dataclass
 class RawStats:
-    job_time: "dd.Scalar"
+    job_time: float
     time_granularity: int
     time_resolution: int
-    trace_event_count: "dd.Scalar"
-    profile_event_count: "dd.Scalar"
-    total_event_count: "dd.Scalar"
-    unique_file_count: "dd.Scalar"
-    unique_host_count: "dd.Scalar"
-    unique_process_count: "dd.Scalar"
+    trace_event_count: int
+    profile_event_count: int
+    total_event_count: int
+    unique_file_count: int
+    unique_host_count: int
+    unique_process_count: int
 
 
 @dc.dataclass
 class ReadTraceResult:
-    traces: dd.DataFrame
-    profiles: Optional[dd.DataFrame] = None
+    traces: DataFrame
+    profiles: Optional[DataFrame] = None
     profile_time_granularity: Optional[float] = None
-    system_metrics: Optional[dd.DataFrame] = None
+    system_metrics: Optional[DataFrame] = None
 
 
 @dc.dataclass
@@ -93,16 +95,7 @@ class RuleResult:
     value_fmt: Optional[str] = None
 
 
-@dc.dataclass
-class ViewResult:
-    critical_view: dd.DataFrame
-    metric: str
-    records: dd.DataFrame
-    view: dd.DataFrame
-    view_type: ViewType
-
-
-View = dd.DataFrame
+View = DataFrame
 
 Characteristics = Dict[str, RuleResult]
 MetricBoundary = Union[int, float]
@@ -114,6 +107,7 @@ Views = Dict[ViewKey, View]
 # --- Analysis facts (analyzer.fact-envelope.v1) -------------------------------
 # The analyzer emits AnalysisFacts (one per analysis window per view); DFDiagnoser
 # consumes them. See docs/window-as-longitudinal-axis.md.
+
 
 @dc.dataclass
 class FactWindow:
@@ -305,24 +299,22 @@ class OutputType:
 class AnalysisResult:
     additional_metrics: Dict[ViewType, List[str]]
     checkpoint_dir: str
-    flat_views: Dict[ViewKey, pd.DataFrame]
+    flat_views: Dict[ViewKey, DataFrame]
     layers: List[Layer]
     raw_stats: RawStats
     view_types: List[ViewType]
     views: Dict[Layer, Views]
-    _hlms: Dict[Layer, dd.DataFrame]
-    _main_views: Dict[Layer, dd.DataFrame]
+    _hlms: Dict[Layer, DataFrame]
+    _main_views: Dict[Layer, DataFrame]
     _metric_boundaries: ViewMetricBoundaries
     analysis_facts: Dict[ViewKey, List[AnalysisFact]] = dc.field(default_factory=dict)
     _read_result: Optional[ReadTraceResult] = None
-    _trace_files: Optional[List[str]] = None
-    _trace_index_path: Optional[str] = None
-    _trace_client: Optional[Any] = None
+    _trace_run: Optional[Any] = None
 
-    def get_hlm(self, layer: Layer) -> dd.DataFrame:
+    def get_hlm(self, layer: Layer) -> DataFrame:
         return self._hlms[layer]
 
-    def get_main_view(self, layer: Layer) -> dd.DataFrame:
+    def get_main_view(self, layer: Layer) -> DataFrame:
         return self._main_views[layer]
 
     @property
@@ -331,40 +323,38 @@ class AnalysisResult:
 
         A lazy, distributed ``DaskTraceViewer`` over the analyzed files, on the
         analyzer's Dask client. Nothing is read until a terminal call, such as
-        ``result.traces.page(10).table.to_pandas()`` or
+        ``result.traces.page(10).table`` or
         ``for table in result.traces.filter('cat == "POSIX"').pages(): ...``.
         """
-        if not self._trace_files or not self._trace_index_path:
+        if self._trace_run is None or not self._trace_run.files:
             return None
-        from dftracer.utils.dask import DaskTraceViewer
-
-        return DaskTraceViewer(self._trace_files, self._trace_index_path, client=self._trace_client)
+        return self._trace_run.viewer()
 
     @property
-    def aggregated_traces(self) -> Optional[dd.DataFrame]:
+    def aggregated_traces(self) -> Optional[DataFrame]:
         """The events grouped by category, function, process, file and time bucket."""
         if self._read_result is None:
             return None
         return self._read_result.traces
 
     @property
-    def profiles(self) -> Optional[dd.DataFrame]:
+    def profiles(self) -> Optional[DataFrame]:
         if self._read_result is None:
             return None
         return self._read_result.profiles
 
     @property
-    def system_metrics(self) -> Optional[dd.DataFrame]:
+    def system_metrics(self) -> Optional[DataFrame]:
         if self._read_result is None:
             return None
         return self._read_result.system_metrics
 
-    def get_flat_view(self, view_key_type: Union[ViewKey, ViewType]) -> pd.DataFrame:
+    def get_flat_view(self, view_key_type: Union[ViewKey, ViewType]) -> DataFrame:
         if not isinstance(view_key_type, tuple):
             view_key_type = (view_key_type,)
         return self.flat_views[view_key_type]
 
-    def get_layer_view(self, layer: Layer, view_key_type: Union[ViewKey, ViewType]) -> pd.DataFrame:
+    def get_layer_view(self, layer: Layer, view_key_type: Union[ViewKey, ViewType]) -> DataFrame:
         if not isinstance(view_key_type, tuple):
             view_key_type = (view_key_type,)
         return self.views[layer][view_key_type]
@@ -416,24 +406,7 @@ class AnalysisResult:
         )
 
 
-def _materialize_scalar(value: Any) -> Any:
-    if value is None:
-        return None
-    if hasattr(value, "compute"):
-        try:
-            value = value.compute()
-        except Exception:
-            pass
-    if hasattr(value, "item"):
-        try:
-            value = value.item()
-        except Exception:
-            pass
-    return value
-
-
 def _to_opt_float(value: Any) -> Optional[float]:
-    value = _materialize_scalar(value)
     if value is None:
         return None
     try:
@@ -443,7 +416,6 @@ def _to_opt_float(value: Any) -> Optional[float]:
 
 
 def _to_opt_int(value: Any) -> Optional[int]:
-    value = _materialize_scalar(value)
     if value is None:
         return None
     try:

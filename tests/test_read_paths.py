@@ -9,9 +9,9 @@ silent until arithmetic fails much later.
 Two divergences this pins down:
 
 * the C++ aggregator dictionary-encodes string columns, and only the
-  distributed path decoded them -- the local path produced `category`, which
-  `normalize_arrow_dtypes` demotes to `object`, so `count / time` followed
-  Python scalar rules and raised ZeroDivisionError instead of yielding inf.
+  distributed path decoded them -- the local path produced `category` columns,
+  so `count / time` followed Python scalar rules and raised ZeroDivisionError
+  instead of yielding inf. Both paths now give library frames with string columns.
 * `_time_origin` was only ever set by the distributed path, so the local path
   bucketed `time_range` against a different origin.
 """
@@ -20,11 +20,12 @@ import pathlib
 import pytest
 from dask.distributed import LocalCluster
 from dftracer.analyzer import init_with_hydra
+from dftracer.utils import DType
 
 
 # 8 files, so the distributed path spreads the scan across workers and each may
 # dictionary-encode independently -- which is what the decoding exists for.
-TRACE_PATH = "tests/data/extracted/dftracer-dlio"
+TRACE_NAME = "dftracer-dlio"
 PRESET = "ai"
 
 
@@ -36,7 +37,12 @@ def dask_cluster():
 
 
 @pytest.fixture(scope="module")
-def analyzer(tmp_path_factory, dask_cluster):
+def trace_dir(module_trace_copy):
+    return module_trace_copy(TRACE_NAME)
+
+
+@pytest.fixture(scope="module")
+def analyzer(tmp_path_factory, dask_cluster, trace_dir):
     tmp_path = tmp_path_factory.mktemp("read_paths")
     overrides = [
         "analyzer=dftracer",
@@ -48,7 +54,7 @@ def analyzer(tmp_path_factory, dask_cluster):
         f"cluster.scheduler_address={dask_cluster.scheduler_address}",
         f"hydra.run.dir={tmp_path}",
         f"hydra.runtime.output_dir={tmp_path}",
-        f"trace_path={TRACE_PATH}",
+        f"trace_path={trace_dir}",
         "view_types=[time_range]",
     ]
     dfa = init_with_hydra(hydra_overrides=overrides)
@@ -57,18 +63,18 @@ def analyzer(tmp_path_factory, dask_cluster):
 
 
 @pytest.fixture(scope="module")
-def read_paths(analyzer):
+def read_paths(analyzer, trace_dir):
     """Both read paths, plus the `_time_origin` each one left behind."""
-    trace_path = str(pathlib.Path(TRACE_PATH).resolve())
+    trace_path = str(pathlib.Path(trace_dir).resolve())
 
-    distributed = analyzer.read_trace(trace_path).traces.compute()
+    distributed = analyzer.read_trace(trace_path).traces
     distributed_origin = getattr(analyzer, "_time_origin", None)
 
     # Clear it first: the distributed read above already set `_time_origin`, and
     # a local path that never sets one would otherwise inherit that value and
     # look correct.
     analyzer._time_origin = None
-    local = analyzer.read_trace_local(trace_path).traces.compute()
+    local = analyzer.read_trace_local(trace_path).traces
     local_origin = getattr(analyzer, "_time_origin", None)
 
     return distributed, distributed_origin, local, local_origin
@@ -83,9 +89,9 @@ def test_read_paths_agree_on_schema(read_paths) -> None:
     assert list(distributed.columns) == list(local.columns), "column sets differ"
 
     mismatched = {
-        col: (str(distributed[col].dtype), str(local[col].dtype))
+        col: (distributed.schema[col], local.schema[col])
         for col in distributed.columns
-        if str(distributed[col].dtype) != str(local[col].dtype)
+        if distributed.schema[col] != local.schema[col]
     }
     assert not mismatched, f"dtype mismatches between read paths: {mismatched}"
 
@@ -95,11 +101,11 @@ def test_read_paths_agree_on_string_columns(read_paths) -> None:
     """Guards the decoding specifically: `category` here is the regression."""
     distributed, _, local, _ = read_paths
 
-    string_cols = [col for col in distributed.columns if str(distributed[col].dtype) == "string"]
+    string_cols = [col for col in distributed.columns if distributed.schema[col] == DType.STRING]
     assert string_cols, "no string columns -- the decoding regression could not be observed"
 
-    categorical = [col for col in string_cols if str(local[col].dtype) == "category"]
-    assert not categorical, f"local path left columns dictionary-encoded: {categorical}"
+    encoded = [col for col in string_cols if local.schema[col] != DType.STRING]
+    assert not encoded, f"local path left string columns encoded: {encoded}"
 
 
 @pytest.mark.smoke
@@ -114,10 +120,10 @@ def test_local_read_sets_time_origin(read_paths) -> None:
 
 
 @pytest.mark.smoke
-def test_read_trace_rejects_dir_with_only_nested_traces(analyzer, tmp_path) -> None:
+def test_read_trace_rejects_dir_with_only_nested_traces(analyzer, trace_dir, tmp_path) -> None:
     nested = tmp_path / "sub"
     nested.mkdir()
-    src = next(pathlib.Path(TRACE_PATH).glob("*.pfw*"))
+    src = next(pathlib.Path(trace_dir).glob("*.pfw*"))
     (nested / src.name).write_bytes(src.read_bytes())
 
     with pytest.raises(FileNotFoundError, match="subdirectories are not searched"):

@@ -6,6 +6,7 @@ import pytest
 from dftracer.analyzer.constants import HUMANIZED_LAYERS, MiB
 from dftracer.analyzer.output import ConsoleOutput
 from dftracer.analyzer.types import AnalysisResult, RawStats
+from dftracer.utils import DataFrame
 
 
 pytestmark = [pytest.mark.smoke, pytest.mark.full]
@@ -13,7 +14,7 @@ pytestmark = [pytest.mark.smoke, pytest.mark.full]
 
 def _summarize(flat_view, layer, view_type):
     result = AnalysisResult(
-        additional_metrics={}, checkpoint_dir='', flat_views={(view_type,): flat_view},
+        additional_metrics={}, checkpoint_dir='', flat_views={(view_type,): DataFrame.from_pandas(flat_view)},
         layers=[layer], raw_stats=RawStats(20, 5, 1000, 0, 0, 0, 1, 1, 2),
         view_types=[view_type], views={}, _hlms={}, _main_views={}, _metric_boundaries={},
     )

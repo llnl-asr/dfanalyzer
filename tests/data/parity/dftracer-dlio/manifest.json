@@ -1,0 +1,666 @@
+{
+ "views": [
+  {
+   "layer": "app",
+   "view_key": [
+    "proc_name"
+   ],
+   "view_type": "proc_name",
+   "view_types": [
+    "proc_name",
+    "time_range"
+   ],
+   "logical_views": {
+    "file_name": [
+     "file_dir",
+     "file_pattern"
+    ],
+    "proc_name": [
+     "host_name",
+     "proc_id",
+     "thread_id"
+    ]
+   },
+   "time_sliced": false
+  },
+  {
+   "layer": "app",
+   "view_key": [
+    "time_range"
+   ],
+   "view_type": "time_range",
+   "view_types": [
+    "proc_name",
+    "time_range"
+   ],
+   "logical_views": {
+    "file_name": [
+     "file_dir",
+     "file_pattern"
+    ],
+    "proc_name": [
+     "host_name",
+     "proc_id",
+     "thread_id"
+    ]
+   },
+   "time_sliced": false
+  },
+  {
+   "layer": "training",
+   "view_key": [
+    "proc_name"
+   ],
+   "view_type": "proc_name",
+   "view_types": [
+    "proc_name",
+    "time_range"
+   ],
+   "logical_views": {
+    "file_name": [
+     "file_dir",
+     "file_pattern"
+    ],
+    "proc_name": [
+     "host_name",
+     "proc_id",
+     "thread_id"
+    ]
+   },
+   "time_sliced": false
+  },
+  {
+   "layer": "training",
+   "view_key": [
+    "time_range"
+   ],
+   "view_type": "time_range",
+   "view_types": [
+    "proc_name",
+    "time_range"
+   ],
+   "logical_views": {
+    "file_name": [
+     "file_dir",
+     "file_pattern"
+    ],
+    "proc_name": [
+     "host_name",
+     "proc_id",
+     "thread_id"
+    ]
+   },
+   "time_sliced": false
+  },
+  {
+   "layer": "epoch",
+   "view_key": [
+    "proc_name"
+   ],
+   "view_type": "proc_name",
+   "view_types": [
+    "proc_name",
+    "time_range"
+   ],
+   "logical_views": {
+    "file_name": [
+     "file_dir",
+     "file_pattern"
+    ],
+    "proc_name": [
+     "host_name",
+     "proc_id",
+     "thread_id"
+    ]
+   },
+   "time_sliced": false
+  },
+  {
+   "layer": "epoch",
+   "view_key": [
+    "time_range"
+   ],
+   "view_type": "time_range",
+   "view_types": [
+    "proc_name",
+    "time_range"
+   ],
+   "logical_views": {
+    "file_name": [
+     "file_dir",
+     "file_pattern"
+    ],
+    "proc_name": [
+     "host_name",
+     "proc_id",
+     "thread_id"
+    ]
+   },
+   "time_sliced": false
+  },
+  {
+   "layer": "compute",
+   "view_key": [
+    "proc_name"
+   ],
+   "view_type": "proc_name",
+   "view_types": [
+    "proc_name",
+    "time_range"
+   ],
+   "logical_views": {
+    "file_name": [
+     "file_dir",
+     "file_pattern"
+    ],
+    "proc_name": [
+     "host_name",
+     "proc_id",
+     "thread_id"
+    ]
+   },
+   "time_sliced": false
+  },
+  {
+   "layer": "compute",
+   "view_key": [
+    "time_range"
+   ],
+   "view_type": "time_range",
+   "view_types": [
+    "proc_name",
+    "time_range"
+   ],
+   "logical_views": {
+    "file_name": [
+     "file_dir",
+     "file_pattern"
+    ],
+    "proc_name": [
+     "host_name",
+     "proc_id",
+     "thread_id"
+    ]
+   },
+   "time_sliced": false
+  },
+  {
+   "layer": "fetch_data",
+   "view_key": [
+    "proc_name"
+   ],
+   "view_type": "proc_name",
+   "view_types": [
+    "proc_name",
+    "time_range"
+   ],
+   "logical_views": {
+    "file_name": [
+     "file_dir",
+     "file_pattern"
+    ],
+    "proc_name": [
+     "host_name",
+     "proc_id",
+     "thread_id"
+    ]
+   },
+   "time_sliced": false
+  },
+  {
+   "layer": "fetch_data",
+   "view_key": [
+    "time_range"
+   ],
+   "view_type": "time_range",
+   "view_types": [
+    "proc_name",
+    "time_range"
+   ],
+   "logical_views": {
+    "file_name": [
+     "file_dir",
+     "file_pattern"
+    ],
+    "proc_name": [
+     "host_name",
+     "proc_id",
+     "thread_id"
+    ]
+   },
+   "time_sliced": false
+  },
+  {
+   "layer": "checkpoint",
+   "view_key": [
+    "proc_name"
+   ],
+   "view_type": "proc_name",
+   "view_types": [
+    "proc_name",
+    "time_range"
+   ],
+   "logical_views": {
+    "file_name": [
+     "file_dir",
+     "file_pattern"
+    ],
+    "proc_name": [
+     "host_name",
+     "proc_id",
+     "thread_id"
+    ]
+   },
+   "time_sliced": false
+  },
+  {
+   "layer": "checkpoint",
+   "view_key": [
+    "time_range"
+   ],
+   "view_type": "time_range",
+   "view_types": [
+    "proc_name",
+    "time_range"
+   ],
+   "logical_views": {
+    "file_name": [
+     "file_dir",
+     "file_pattern"
+    ],
+    "proc_name": [
+     "host_name",
+     "proc_id",
+     "thread_id"
+    ]
+   },
+   "time_sliced": false
+  },
+  {
+   "layer": "data_loader",
+   "view_key": [
+    "proc_name"
+   ],
+   "view_type": "proc_name",
+   "view_types": [
+    "proc_name",
+    "time_range"
+   ],
+   "logical_views": {
+    "file_name": [
+     "file_dir",
+     "file_pattern"
+    ],
+    "proc_name": [
+     "host_name",
+     "proc_id",
+     "thread_id"
+    ]
+   },
+   "time_sliced": false
+  },
+  {
+   "layer": "data_loader",
+   "view_key": [
+    "time_range"
+   ],
+   "view_type": "time_range",
+   "view_types": [
+    "proc_name",
+    "time_range"
+   ],
+   "logical_views": {
+    "file_name": [
+     "file_dir",
+     "file_pattern"
+    ],
+    "proc_name": [
+     "host_name",
+     "proc_id",
+     "thread_id"
+    ]
+   },
+   "time_sliced": false
+  },
+  {
+   "layer": "data_loader_fork",
+   "view_key": [
+    "proc_name"
+   ],
+   "view_type": "proc_name",
+   "view_types": [
+    "proc_name",
+    "time_range"
+   ],
+   "logical_views": {
+    "file_name": [
+     "file_dir",
+     "file_pattern"
+    ],
+    "proc_name": [
+     "host_name",
+     "proc_id",
+     "thread_id"
+    ]
+   },
+   "time_sliced": false
+  },
+  {
+   "layer": "data_loader_fork",
+   "view_key": [
+    "time_range"
+   ],
+   "view_type": "time_range",
+   "view_types": [
+    "proc_name",
+    "time_range"
+   ],
+   "logical_views": {
+    "file_name": [
+     "file_dir",
+     "file_pattern"
+    ],
+    "proc_name": [
+     "host_name",
+     "proc_id",
+     "thread_id"
+    ]
+   },
+   "time_sliced": false
+  },
+  {
+   "layer": "reader",
+   "view_key": [
+    "proc_name"
+   ],
+   "view_type": "proc_name",
+   "view_types": [
+    "proc_name",
+    "time_range"
+   ],
+   "logical_views": {
+    "file_name": [
+     "file_dir",
+     "file_pattern"
+    ],
+    "proc_name": [
+     "host_name",
+     "proc_id",
+     "thread_id"
+    ]
+   },
+   "time_sliced": false
+  },
+  {
+   "layer": "reader",
+   "view_key": [
+    "time_range"
+   ],
+   "view_type": "time_range",
+   "view_types": [
+    "proc_name",
+    "time_range"
+   ],
+   "logical_views": {
+    "file_name": [
+     "file_dir",
+     "file_pattern"
+    ],
+    "proc_name": [
+     "host_name",
+     "proc_id",
+     "thread_id"
+    ]
+   },
+   "time_sliced": false
+  },
+  {
+   "layer": "posix",
+   "view_key": [
+    "proc_name"
+   ],
+   "view_type": "proc_name",
+   "view_types": [
+    "proc_name",
+    "time_range"
+   ],
+   "logical_views": {
+    "file_name": [
+     "file_dir",
+     "file_pattern"
+    ],
+    "proc_name": [
+     "host_name",
+     "proc_id",
+     "thread_id"
+    ]
+   },
+   "time_sliced": false
+  },
+  {
+   "layer": "posix",
+   "view_key": [
+    "time_range"
+   ],
+   "view_type": "time_range",
+   "view_types": [
+    "proc_name",
+    "time_range"
+   ],
+   "logical_views": {
+    "file_name": [
+     "file_dir",
+     "file_pattern"
+    ],
+    "proc_name": [
+     "host_name",
+     "proc_id",
+     "thread_id"
+    ]
+   },
+   "time_sliced": false
+  },
+  {
+   "layer": "reader_posix",
+   "view_key": [
+    "proc_name"
+   ],
+   "view_type": "proc_name",
+   "view_types": [
+    "proc_name",
+    "time_range"
+   ],
+   "logical_views": {
+    "file_name": [
+     "file_dir",
+     "file_pattern"
+    ],
+    "proc_name": [
+     "host_name",
+     "proc_id",
+     "thread_id"
+    ]
+   },
+   "time_sliced": false
+  },
+  {
+   "layer": "reader_posix",
+   "view_key": [
+    "time_range"
+   ],
+   "view_type": "time_range",
+   "view_types": [
+    "proc_name",
+    "time_range"
+   ],
+   "logical_views": {
+    "file_name": [
+     "file_dir",
+     "file_pattern"
+    ],
+    "proc_name": [
+     "host_name",
+     "proc_id",
+     "thread_id"
+    ]
+   },
+   "time_sliced": false
+  },
+  {
+   "layer": "checkpoint_posix",
+   "view_key": [
+    "proc_name"
+   ],
+   "view_type": "proc_name",
+   "view_types": [
+    "proc_name",
+    "time_range"
+   ],
+   "logical_views": {
+    "file_name": [
+     "file_dir",
+     "file_pattern"
+    ],
+    "proc_name": [
+     "host_name",
+     "proc_id",
+     "thread_id"
+    ]
+   },
+   "time_sliced": false
+  },
+  {
+   "layer": "checkpoint_posix",
+   "view_key": [
+    "time_range"
+   ],
+   "view_type": "time_range",
+   "view_types": [
+    "proc_name",
+    "time_range"
+   ],
+   "logical_views": {
+    "file_name": [
+     "file_dir",
+     "file_pattern"
+    ],
+    "proc_name": [
+     "host_name",
+     "proc_id",
+     "thread_id"
+    ]
+   },
+   "time_sliced": false
+  }
+ ],
+ "mains": [
+  {
+   "layer": "app",
+   "view_types": [
+    "proc_name",
+    "time_range"
+   ],
+   "time_sliced": false
+  },
+  {
+   "layer": "training",
+   "view_types": [
+    "proc_name",
+    "time_range"
+   ],
+   "time_sliced": false
+  },
+  {
+   "layer": "epoch",
+   "view_types": [
+    "proc_name",
+    "time_range"
+   ],
+   "time_sliced": false
+  },
+  {
+   "layer": "compute",
+   "view_types": [
+    "proc_name",
+    "time_range"
+   ],
+   "time_sliced": false
+  },
+  {
+   "layer": "fetch_data",
+   "view_types": [
+    "proc_name",
+    "time_range"
+   ],
+   "time_sliced": false
+  },
+  {
+   "layer": "checkpoint",
+   "view_types": [
+    "proc_name",
+    "time_range"
+   ],
+   "time_sliced": false
+  },
+  {
+   "layer": "data_loader",
+   "view_types": [
+    "proc_name",
+    "time_range"
+   ],
+   "time_sliced": false
+  },
+  {
+   "layer": "data_loader_fork",
+   "view_types": [
+    "proc_name",
+    "time_range"
+   ],
+   "time_sliced": false
+  },
+  {
+   "layer": "reader",
+   "view_types": [
+    "proc_name",
+    "time_range"
+   ],
+   "time_sliced": false
+  },
+  {
+   "layer": "posix",
+   "view_types": [
+    "proc_name",
+    "time_range"
+   ],
+   "time_sliced": false
+  },
+  {
+   "layer": "reader_posix",
+   "view_types": [
+    "proc_name",
+    "time_range"
+   ],
+   "time_sliced": false
+  },
+  {
+   "layer": "checkpoint_posix",
+   "view_types": [
+    "proc_name",
+    "time_range"
+   ],
+   "time_sliced": false
+  }
+ ],
+ "flat": [
+  {
+   "view_key": [
+    "proc_name"
+   ]
+  },
+  {
+   "view_key": [
+    "time_range"
+   ]
+  }
+ ]
+}

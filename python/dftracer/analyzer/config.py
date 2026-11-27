@@ -317,7 +317,7 @@ class AnalyzerConfig:
     time_granularity: Optional[float] = MISSING
     time_resolution: Optional[float] = MISSING
     time_sliced: Optional[bool] = False
-    # Compute a layer's views in pandas when its main view is provably smaller
+    # Compute a layer's views in this process when its main view is provably smaller
     # than this. The per-view Dask machinery costs seconds regardless of size,
     # and these frames are routinely a few hundred rows. 0 keeps everything on
     # Dask, which is also how to exercise that path in tests.
@@ -358,7 +358,7 @@ class AutoClusterConfig(ClusterConfig):
     """Start in this process, and fall back to a local cluster if the trace is big.
 
     The scan runs here first, one file group at a time, accumulating the
-    aggregated Arrow payloads. If they outgrow `max_bytes` the partial scan is
+    aggregated frames. If they outgrow `max_bytes` the partial scan is
     dropped, a `LocalCluster` is started, and the read is redone across its
     workers. Small traces therefore never pay for a cluster, and large ones are
     not asked to fit in one process.
@@ -371,9 +371,9 @@ class AutoClusterConfig(ClusterConfig):
     """
 
     _target_: str = "dftracer.analyzer.cluster.AutoCluster"
-    # Aggregated Arrow bytes, not trace bytes on disk. Generous next to what the
+    # Aggregated frame bytes, not trace bytes on disk. Generous next to what the
     # fixtures produce (under a megabyte), while staying well inside the memory
-    # a single process can turn into pandas frames.
+    # a single process can hold as frames.
     max_bytes: int = 256 * 1024 * 1024
     # Used only if the budget is exceeded and a cluster has to be started.
     host: Optional[str] = None
@@ -391,7 +391,7 @@ class InProcessClusterConfig(ClusterConfig):
     `NullClient`. Worth choosing when the cluster costs more than it buys:
     startup and teardown are ~1.8s of an 11.9s run on the `dftracer-ai`
     fixture, and the workers reserve memory that a hosted deployment may not
-    have. Views are already computed in pandas whenever they are small enough
+    have. Views are already computed in this process whenever they are small enough
     (see `view_materialize_max_bytes`), so for small traces the cluster is
     largely orchestration overhead.
 

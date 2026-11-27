@@ -1,8 +1,7 @@
 """Attribute time inside the 'Compute views' phase.
 
-Counts how many views are built, and splits each one into graph-construction
-time (everything before .persist()) versus persist() itself, then reports how
-much of the run is left for the final compute().
+Counts how many views and main views are built, times each, and reports how
+much of the run is left for everything else.
 """
 
 import os
@@ -16,7 +15,6 @@ def main():
     trace_dir = os.path.abspath(sys.argv[1])
     preset = sys.argv[2]
 
-    import dask.dataframe as dd
     from dftracer.analyzer import init_with_hydra
     from dftracer.analyzer.analyzer import Analyzer
     from dftracer.analyzer.dftracer import DFTracerAnalyzer
@@ -28,26 +26,11 @@ def main():
     orig_view = DFTracerAnalyzer._compute_view
     orig_main = Analyzer._compute_main_view
 
-    # Time .persist() separately from graph construction by intercepting it on
-    # the object _compute_view is about to persist.
-    real_persist = dd.DataFrame.persist
-
-    def timed_persist(self, *a, **kw):
-        t = time.perf_counter()
-        out = real_persist(self, *a, **kw)
-        stats["persist"] += time.perf_counter() - t
-        counts["persist"] += 1
-        return out
-
     def wrapped_view(self, *a, **kw):
         layer = kw.get("layer", a[0] if a else "?")
         view_key = kw.get("view_key", "?")
         t = time.perf_counter()
-        dd.DataFrame.persist = timed_persist
-        try:
-            out = orig_view(self, *a, **kw)
-        finally:
-            dd.DataFrame.persist = real_persist
+        out = orig_view(self, *a, **kw)
         el = time.perf_counter() - t
         stats["_compute_view"] += el
         counts["_compute_view"] += 1
@@ -82,9 +65,6 @@ def main():
           f"({stats['_compute_main_view']/total*100:5.1f}%)  n={counts['_compute_main_view']}")
     print(f"  _compute_view      : {stats['_compute_view']:7.2f}s  "
           f"({stats['_compute_view']/total*100:5.1f}%)  n={counts['_compute_view']}")
-    print(f"    of which persist(): {stats['persist']:7.2f}s  "
-          f"({stats['persist']/total*100:5.1f}%)  n={counts['persist']}")
-    print(f"    graph build      : {stats['_compute_view'] - stats['persist']:7.2f}s")
     rest = total - stats["_compute_view"] - stats["_compute_main_view"]
     print(f"  everything else    : {rest:7.2f}s  ({rest/total*100:5.1f}%)")
     if counts["_compute_view"]:

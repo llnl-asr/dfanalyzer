@@ -11,9 +11,9 @@ from glob import glob
 
 # Full test matrix for comprehensive testing
 full_analyzer_trace_params = [
-    ("dftracer", "ai", "tests/data/extracted/dftracer-ai"),
-    ("dftracer", "dlio", "tests/data/extracted/dftracer-dlio"),
-    ("dftracer", "posix", "tests/data/extracted/dftracer-posix"),
+    ("dftracer", "ai", "dftracer-ai"),
+    ("dftracer", "dlio", "dftracer-dlio"),
+    ("dftracer", "posix", "dftracer-posix"),
 ]
 full_checkpoint_params = [True, False]
 
@@ -25,9 +25,9 @@ full_checkpoint_params = [True, False]
 # happened before #63, when the dftracer fixtures shipped uncompressed .pfw
 # traces the indexer could not read.
 EXPECTED_TRACE_STATS = {
-    "tests/data/extracted/dftracer-ai": (125669, 1),
-    "tests/data/extracted/dftracer-dlio": (18039, 8),
-    "tests/data/extracted/dftracer-posix": (2056, 1),
+    "dftracer-ai": (125669, 1),
+    "dftracer-dlio": (18039, 8),
+    "dftracer-posix": (2056, 1),
 }
 
 # Reduced matrix for smoke testing (fast runs)
@@ -35,7 +35,7 @@ smoke_analyzer_trace_params = [random.choice(full_analyzer_trace_params)]
 smoke_checkpoint_params = [False]  # Skip checkpoint to make tests faster
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture
 def dask_cluster():
     cluster = LocalCluster(processes=False, protocol="tcp", worker_class="distributed.nanny.Nanny")
     yield cluster
@@ -60,37 +60,39 @@ def test_expected_trace_stats_keys_are_live() -> None:
 
 
 @pytest.mark.full
-@pytest.mark.parametrize("analyzer, preset, trace_path", full_analyzer_trace_params)
+@pytest.mark.parametrize("analyzer, preset, trace_name", full_analyzer_trace_params)
 @pytest.mark.parametrize("checkpoint", full_checkpoint_params)
 def test_e2e_full(
     analyzer: str,
     preset: str,
-    trace_path: str,
+    trace_name: str,
     checkpoint: bool,
     tmp_path: pathlib.Path,
     dask_cluster: LocalCluster,
+    trace_copy,
 ) -> None:
     """Full test suite with all parameter combinations."""
-    _test_e2e(analyzer, preset, trace_path, checkpoint, tmp_path, dask_cluster)
+    _test_e2e(analyzer, preset, trace_copy(trace_name), trace_name, checkpoint, tmp_path, dask_cluster)
 
 
 @pytest.mark.smoke
-@pytest.mark.parametrize("analyzer, preset, trace_path", smoke_analyzer_trace_params)
+@pytest.mark.parametrize("analyzer, preset, trace_name", smoke_analyzer_trace_params)
 @pytest.mark.parametrize("checkpoint", smoke_checkpoint_params)
 def test_e2e_smoke(
     analyzer: str,
     preset: str,
-    trace_path: str,
+    trace_name: str,
     checkpoint: bool,
     tmp_path: pathlib.Path,
     dask_cluster: LocalCluster,
+    trace_copy,
 ) -> None:
     """Smoke test with minimal parameter combinations for quick validation."""
-    _test_e2e(analyzer, preset, trace_path, checkpoint, tmp_path, dask_cluster)
+    _test_e2e(analyzer, preset, trace_copy(trace_name), trace_name, checkpoint, tmp_path, dask_cluster)
 
 
 @pytest.mark.smoke
-def test_json_output_file(tmp_path: pathlib.Path, dask_cluster: LocalCluster) -> None:
+def test_json_output_file(tmp_path: pathlib.Path, dask_cluster: LocalCluster, trace_copy) -> None:
     """Verify JSON output file is created with the expected schema and views."""
     checkpoint_dir = f"{tmp_path}/checkpoints"
     scheduler_address = dask_cluster.scheduler_address
@@ -107,7 +109,7 @@ def test_json_output_file(tmp_path: pathlib.Path, dask_cluster: LocalCluster) ->
         f"output.file_path={output_path}",
         f"hydra.run.dir={tmp_path}",
         f"hydra.runtime.output_dir={tmp_path}",
-        "trace_path=tests/data/extracted/dftracer-posix",
+        f"trace_path={trace_copy('dftracer-posix')}",
         "view_types=[time_range,proc_name]",
     ]
 
@@ -136,6 +138,7 @@ def _test_e2e(
     analyzer: str,
     preset: str,
     trace_path: str,
+    trace_name: str,
     checkpoint: bool,
     tmp_path: pathlib.Path,
     dask_cluster: LocalCluster,
@@ -190,9 +193,9 @@ def _test_e2e(
         f"Expected {len(dfa.hydra_config.analyzer.preset.layer_defs)} layers, got {len(result.layers)}"
     )
     if checkpoint:
-        assert any(glob(f"{result.checkpoint_dir}/*.parquet")), "No checkpoint found"
+        assert any(glob(f"{result.checkpoint_dir}/*.pfw.gz")), "No checkpoint found"
 
-    expected = EXPECTED_TRACE_STATS.get(trace_path)
+    expected = EXPECTED_TRACE_STATS.get(trace_name)
     if expected is not None:
         expected_events, expected_procs = expected
         raw_stats = dask.compute(result.raw_stats)[0]
@@ -200,12 +203,12 @@ def _test_e2e(
         actual_events = int(stats["total_event_count"])
         actual_procs = int(stats["unique_process_count"])
         assert actual_events == expected_events, (
-            f"{trace_path}: expected {expected_events} events, got {actual_events}. "
+            f"{trace_name}: expected {expected_events} events, got {actual_events}. "
             "A zero or short count means the trace was not read, not that the "
             "analysis is empty."
         )
         assert actual_procs == expected_procs, (
-            f"{trace_path}: expected {expected_procs} processes, got {actual_procs}"
+            f"{trace_name}: expected {expected_procs} processes, got {actual_procs}"
         )
 
     # Shutdown the Dask client and cluster

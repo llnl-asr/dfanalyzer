@@ -1,15 +1,18 @@
+import asyncio
 import hydra
 import signal
 import structlog
 from dask_jobqueue import LSFCluster, PBSCluster, SLURMCluster
 from dataclasses import asdict, dataclass, field
-from distributed import Client, LocalCluster, wait
+from distributed import Client, LocalCluster
+from dftracer.utils.dask import register_auto_thread_plugin
 from hydra.core.config_store import ConfigStore
 from hydra.utils import instantiate
 from omegaconf import MISSING
 from typing import Any, List, Optional, Union
 
 from .config import (
+    CLUSTER_RESTART_TIMEOUT_SECONDS,
     AutoClusterConfig,
     ClusterConfig,
     CustomHelpConfig,
@@ -30,6 +33,27 @@ class ExternalCluster:
     restart_on_connect: Optional[bool]
     scheduler_address: str
     local_directory: Optional[str]
+
+
+def connect_external(cluster: ExternalCluster) -> Client:
+    """Connect to an external cluster and wait until it has at least one worker.
+
+    Raises `TimeoutError` when no worker arrives within
+    `CLUSTER_RESTART_TIMEOUT_SECONDS`. Without this check an empty cluster is
+    accepted and the first submitted task waits forever.
+    """
+    client = Client(cluster.scheduler_address)
+    if cluster.restart_on_connect:
+        client.restart(timeout=CLUSTER_RESTART_TIMEOUT_SECONDS)
+    try:
+        client.wait_for_workers(1, timeout=CLUSTER_RESTART_TIMEOUT_SECONDS)
+    except (TimeoutError, asyncio.TimeoutError) as e:
+        client.close()
+        raise TimeoutError(
+            f"external Dask cluster at {cluster.scheduler_address} has no worker "
+            f"after {CLUSTER_RESTART_TIMEOUT_SECONDS}s"
+        ) from e
+    return client
 
 
 @dataclass
@@ -139,8 +163,8 @@ class NullClient:
         """Work is finished by the time anything could cancel it."""
 
     def nthreads(self, *args, **kwargs) -> dict:
-        """No workers, so no per-worker thread counts."""
-        return {}
+        """This process is the one worker, keyed as in `run`."""
+        return {"in-process": 1}
 
     def scheduler_info(self, *args, **kwargs) -> dict:
         """No scheduler, so no workers."""
@@ -219,31 +243,58 @@ class AutoClient:
         drop what it holds and re-submit through the cluster; the warning tells a
         manual-cluster user how much memory or how many nodes they need.
         """
-        from dftracer.utils.dftracer_utils_ext import memory_budget_advice
+        if self._fits(nbytes):
+            return True
+        self._reject(nbytes)
+        return False
+
+    def _fits(self, nbytes: int) -> bool:
+        from dftracer.utils.runtime import memory_budget_advice
 
         advice = memory_budget_advice(nbytes)
-        if not advice["fits"]:
+        if not advice.fits:
             logger.warning(
-                advice["warning"],
+                advice.warning,
                 scanned_bytes=nbytes,
-                suggested_nodes=advice["suggested_nodes"],
+                suggested_nodes=advice.suggested_nodes,
             )
-        if advice["fits"] and nbytes <= self.max_bytes:
+        if advice.fits and nbytes <= self.max_bytes:
             logger.info("analysing in process", scanned_bytes=nbytes, max_bytes=self.max_bytes)
             return True
+        return False
+
+    def _reject(self, nbytes: int) -> None:
         logger.info(
             "trace too large to analyse in process, starting a cluster",
             scanned_bytes=nbytes,
             max_bytes=self.max_bytes,
         )
         self.promote()
-        return False
+
+    def gather_within_budget(self, submit, on_disk_bytes, nbytes) -> list:
+        """Run `submit()` and gather it in process when it fits, else on a new cluster.
+
+        `submit` makes the futures and may run twice: in process first, then
+        again after a promote. `on_disk_bytes()` is a cheap upper bound of the
+        input size, and `nbytes(results)` sizes the gathered results.
+        """
+        if self.accepts_estimate(on_disk_bytes()):
+            results = self.gather(submit())
+            size = nbytes(results)
+            if self._fits(size):
+                return results
+            # Free the rejected result before the cluster starts and the rerun
+            # builds its replacement.
+            results = None
+            self._reject(size)
+        return self.gather(submit())
 
     def promote(self):
         """Start a real cluster and route everything to it from here on."""
         if self._cluster is None:
             self._cluster = self._spec.build_cluster()
             self._impl = Client(self._cluster)
+            register_auto_thread_plugin()
         return self._impl
 
     def close(self, *args, **kwargs) -> None:
@@ -260,20 +311,11 @@ class AutoClient:
         return getattr(self._impl, name)
 
 
-def wait_for(client, items) -> None:
-    """Block until `items` are finished, where finishing means anything.
-
-    This asks the *client*, not the frames. `distributed.wait` needs a
-    scheduler tracking futures, and whether one exists is a property of how
-    execution was set up -- not of whether a given collection is a Dask
-    collection. The two come apart exactly here: under `cluster=none` the
-    frames are still genuine Dask DataFrames, so anything that dispatched on
-    the frame would conclude "Dask, therefore wait" and raise `No clients
-    found`. There is nothing to wait for either way, because `persist` and
-    `compute` have already run to completion inline.
-    """
-    if getattr(client, "is_distributed", True):
-        wait(items)
+def gather_within_budget(client, submit, on_disk_bytes, nbytes) -> list:
+    """Gather `submit()` on `client`. An `AutoClient` may run it twice; see its method."""
+    if isinstance(client, AutoClient):
+        return client.gather_within_budget(submit, on_disk_bytes, nbytes)
+    return client.gather(submit())
 
 
 @dataclass

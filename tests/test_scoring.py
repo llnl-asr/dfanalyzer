@@ -2,8 +2,8 @@
 (The MetricFactBuilder that consumes these lands with the fact engine, Stage 2.)"""
 import math
 
-import pandas as pd
 import pytest
+from dftracer.utils import Series
 
 from dftracer.analyzer.scoring import normalize_slope
 from dftracer.analyzer.types import (
@@ -23,8 +23,8 @@ def test_normalize_slope_is_continuous_0_1():
 
 
 def test_normalize_slope_on_series():
-    s = pd.Series([0.5, 1.0, TAN67_5, BIG_SLOPE], index=["a", "b", "c", "d"])
-    assert list(normalize_slope(s).round(3)) == [0.0, 0.0, 0.5, 1.0]
+    s = Series([0.5, 1.0, TAN67_5, BIG_SLOPE])
+    assert normalize_slope(s).round(3).to_list() == [0.0, 0.0, 0.5, 1.0]
 
 
 def test_fact_dataclasses_and_envelope_roundtrip():

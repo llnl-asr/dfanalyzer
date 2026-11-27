@@ -126,8 +126,10 @@ Each fact carries a continuous `severity` in [0,1], a two-level `scope`
 
 ### Producing facts to a bundle (offline)
 
-`output=file` writes the deliverable bundle — `facts.jsonl` (one envelope per window),
-`detail_view_*.parquet`, and `raw_stats.json` — that `dfdiagnoser input=file` consumes:
+`output=file` writes the bundle that `dfdiagnoser input=file` reads: `facts.jsonl` (one envelope
+per window), `detail_view_*.pfw.gz` and `raw_stats.json`.
+The detail views are dftracer-utils tables; read one with
+`dftracer.analyzer.checkpoint_table.read_table(path)`.
 
 ```bash
 dfanalyzer analyzer/preset=ai trace_path=tests/data/extracted/dftracer-ai \
@@ -140,7 +142,7 @@ dfanalyzer analyzer/preset=ai trace_path=tests/data/extracted/dftracer-ai \
 ```text
 [info ] file_output.facts   path=/tmp/bundle/facts.jsonl
 $ ls /tmp/bundle
-facts.jsonl  detail_view_proc_name.parquet  detail_view_time_range.parquet  raw_stats.json
+facts.jsonl  detail_view_proc_name.pfw.gz  detail_view_time_range.pfw.gz  raw_stats.json
 ```
 
 ### Full offline chain (analyzer → diagnoser → optimizer)

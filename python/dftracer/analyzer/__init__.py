@@ -9,8 +9,8 @@ from omegaconf import OmegaConf
 from typing import Callable, Dict, List, Union, Optional
 
 from .analyzer import Analyzer
-from .cluster import AutoClient, AutoCluster, ClusterType, ExternalCluster, InProcessCluster, NullClient
-from .config import CLUSTER_RESTART_TIMEOUT_SECONDS, init_hydra_config_store
+from .cluster import AutoClient, AutoCluster, ClusterType, ExternalCluster, InProcessCluster, NullClient, connect_external
+from .config import init_hydra_config_store
 from .dftracer import DFTracerAnalyzer
 from .output import ConsoleOutput, CSVOutput, JSONOutput, SQLiteOutput
 from .types import ViewType
@@ -92,9 +92,7 @@ def init_with_hydra(hydra_overrides: List[str]):
         elif isinstance(cluster, InProcessCluster):
             client = NullClient()
         elif isinstance(cluster, ExternalCluster):
-            client = Client(cluster.scheduler_address)
-            if cluster.restart_on_connect:
-                client.restart(timeout=CLUSTER_RESTART_TIMEOUT_SECONDS)
+            client = connect_external(cluster)
         else:
             client = Client(cluster)
 

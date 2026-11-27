@@ -14,13 +14,13 @@ pytestmark = [pytest.mark.smoke, pytest.mark.full]
 HHASH = "abc123def456"
 PID = TID = 1000
 FHASH = "f00d"
-FILE_NAME = "/scratch/input.bin"  # avoids POSIX_CAT_RULES suffixes (/data, /checkpoint, ...)
+FILE_NAME = "/scratch/input.bin"  # avoids TraceRules.posix_cat_rules suffixes (/data, /checkpoint, ...)
 
 NESTED_CAT_EVENTS = {"ai": 4, "ai.data": 6, "ai.data.io": 20, "ai.compute": 5, "compute": 3}
 FLAT_CAT_EVENTS = {"POSIX": 8, "MPI": 5}
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture
 def dask_cluster():
     cluster = LocalCluster(processes=False, protocol="tcp", worker_class="distributed.nanny.Nanny")
     yield cluster
@@ -70,7 +70,7 @@ def flat_cat_trace(tmp_path: pathlib.Path) -> str:
 
 @pytest.fixture
 def suffixed_posix_trace(tmp_path: pathlib.Path) -> str:
-    # a /data path makes POSIX_CAT_RULES rewrite cat POSIX -> posix_reader
+    # a /data path makes TraceRules.posix_cat_rules rewrite cat POSIX -> posix_reader
     return _write_trace(tmp_path / "suffixed", {"POSIX": 8}, file_name="/scratch/data/x.bin")
 
 
@@ -214,7 +214,7 @@ def test_auto_preset_rebuilds_the_fact_pipeline_for_discovered_layers(
 def test_auto_preset_discovers_posix_cat_rule_suffixes(
     suffixed_posix_trace: str, tmp_path: pathlib.Path, dask_cluster: LocalCluster
 ) -> None:
-    """POSIX cats rewritten by POSIX_CAT_RULES are discovered under their new name."""
+    """POSIX cats rewritten by TraceRules.posix_cat_rules are discovered under their new name."""
     dfa, result = _analyze(suffixed_posix_trace, tmp_path, dask_cluster)
 
     assert set(result.layers) == {"app", "posix_reader"}

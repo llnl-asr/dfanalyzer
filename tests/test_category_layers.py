@@ -1,12 +1,15 @@
 """Discovered category layers for the `auto` preset, plus their display names."""
 from collections import Counter
 
-import pandas as pd
 import pytest
+from dftracer.utils import DataFrame
+from omegaconf import OmegaConf
 
 from dftracer.analyzer.analyzer import Analyzer
 from dftracer.analyzer.config import AnalyzerPresetConfigAuto, AnalyzerPresetConfigPOSIX
 from dftracer.analyzer.constants import HUMANIZED_LAYERS
+from dftracer.analyzer.dftracer import DFTracerAnalyzer
+from dftracer.analyzer.frames.expr import query
 
 pytestmark = [pytest.mark.smoke, pytest.mark.full]
 
@@ -20,7 +23,7 @@ def _layers(cats):
 
 
 def _matched(df, condition):
-    return len(df) if condition is None else len(df.query(condition))
+    return df.num_rows if condition is None else query(df, condition).num_rows
 
 
 # --- cat normalization -------------------------------------------------------
@@ -98,7 +101,7 @@ def test_missing_intermediate_prefix_is_synthesized():
 
 def test_parent_layer_matches_itself_and_descendants():
     layer_defs, _, _, _ = _layers(NESTED_CATS)
-    df = pd.DataFrame({"cat": ["ai", "ai.data", "ai.data.io", "ai.compute", "compute", "posix"]})
+    df = DataFrame.from_dict({"cat": ["ai", "ai.data", "ai.data.io", "ai.compute", "compute", "posix"]})
     assert _matched(df, layer_defs["app"]) == 6  # boundary: everything
     assert _matched(df, layer_defs["ai"]) == 4  # ai + ai.*
     assert _matched(df, layer_defs["ai_data"]) == 2  # ai.data + ai.data.io
@@ -113,7 +116,7 @@ def test_leaf_layer_uses_exact_match():
 def test_sibling_prefix_is_not_over_captured():
     """`compute` must not absorb `ai.compute`, nor `ai` absorb a cat merely starting with 'ai'."""
     layer_defs, _, _, _ = _layers(["ai", "ai.compute", "compute", "airflow"])
-    df = pd.DataFrame({"cat": ["ai", "ai.compute", "compute", "airflow"]})
+    df = DataFrame.from_dict({"cat": ["ai", "ai.compute", "compute", "airflow"]})
     assert _matched(df, layer_defs["compute"]) == 1
     assert _matched(df, layer_defs["ai"]) == 2  # ai + ai.compute, NOT airflow
     assert _matched(df, layer_defs["airflow"]) == 1
@@ -149,18 +152,32 @@ def test_query_significant_characters_are_escaped(cat):
     """A raw cat interpolated into a query string could break parsing or inject."""
     layer_defs, _, _, _ = _layers([cat])
     key = Analyzer._category_layer_key(cat, set())
-    df = pd.DataFrame({"cat": [cat, "other"]})
+    df = DataFrame.from_dict({"cat": [cat, "other"]})
     assert _matched(df, layer_defs[key]) == 1
 
 
 def test_escaped_parent_condition_still_matches_descendants():
     layer_defs, _, _, _ = _layers(['we"ird', 'we"ird.child'])
     parent_key = Analyzer._category_layer_key('we"ird', set())
-    df = pd.DataFrame({"cat": ['we"ird', 'we"ird.child', "other"]})
+    df = DataFrame.from_dict({"cat": ['we"ird', 'we"ird.child', "other"]})
     assert _matched(df, layer_defs[parent_key]) == 2
 
 
 # --- preset wiring -----------------------------------------------------------
+
+
+def test_category_layers_are_built_from_the_read_frame(tmp_path):
+    analyzer = DFTracerAnalyzer(
+        preset=OmegaConf.structured(AnalyzerPresetConfigAuto()),
+        checkpoint=False,
+        checkpoint_dir=str(tmp_path / "checkpoints"),
+        time_granularity=1,
+        time_resolution=10**6,
+    )
+    traces = DataFrame.from_dict({"cat": ["POSIX", None, "ai.data", "", "dftracer", "posix"]})
+    analyzer._build_category_layers(traces)
+    assert analyzer.layers == ["app", "ai", "ai_data", "posix"]
+    assert analyzer.preset.layer_deps["ai_data"] == "ai"
 
 
 def test_auto_preset_enables_category_discovery():

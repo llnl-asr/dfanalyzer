@@ -1,11 +1,10 @@
 import abc
 import colorsys
-import dask
 import dataclasses as dc
 import json
-import numpy as np
-import pandas as pd
+import math
 import structlog
+from dftracer.utils import DataFrame, Series
 from hydra.core.hydra_config import HydraConfig
 from pathlib import Path
 from rich.console import Console
@@ -14,6 +13,8 @@ from typing import Dict, List, Optional
 
 logger = structlog.get_logger()
 
+from .analysis_utils import is_missing, nan_as_null
+from .checkpoint_table import write_table
 from .constants import COL_PROC_NAME, HUMANIZED_LAYERS, GiB, Layer, MiB
 from .types import (
     AnalysisResult,
@@ -22,6 +23,28 @@ from .types import (
     humanized_view_name,
     view_name,
 )
+
+
+def _numbers(flat_view: DataFrame, name: str, default: float, rows: int | None = None) -> Series:
+    """Column `name` of `flat_view` with NaN as missing and integers kept exact.
+
+    A missing column gives `default` on `rows` rows, one row when `rows` is None (the pandas `get` fallback).
+    """
+    if name not in flat_view.columns:
+        return Series(
+            [default] * (1 if rows is None else rows), dtype="int64" if isinstance(default, int) else "float64"
+        )
+    return nan_as_null(flat_view[name])
+
+
+def _finite(values: Series) -> Series:
+    """The finite values of a numeric Series, missing, NaN and infinite values left out."""
+    values = values.astype("float64")
+    return values.filter(values.is_finite().fillna(False))
+
+
+def _any_nonzero(values: Series) -> bool:
+    return bool((values != 0).fillna(False).any())
 
 
 @dc.dataclass
@@ -72,7 +95,7 @@ class Output(abc.ABC):
         raise NotImplementedError
 
     def _compute_raw_stats(self, result: AnalysisResult) -> RawStats:
-        raw_stats = dask.compute(result.raw_stats)[0]
+        raw_stats = result.raw_stats
         if isinstance(raw_stats, dict):
             raw_stats = RawStats(**raw_stats)
         return raw_stats
@@ -97,42 +120,47 @@ class Output(abc.ABC):
         is_process_based = view_key[-1] == COL_PROC_NAME
         time_metric = 'time_sum' if is_process_based else 'time_proc_max'
         for layer in result.layers:
-            times = flat_view.get(f"{layer}_{time_metric}", pd.Series([0.0]))
+            times = _numbers(flat_view, f"{layer}_{time_metric}", 0.0)
             time = times.max() if is_process_based else times.sum()
-            count = flat_view.get(f"{layer}_count_sum", pd.Series([0])).sum()
-            data_count = flat_view.get(f"{layer}_data_count_sum", pd.Series(dtype='Float64')).sum(min_count=1)
+            count = _numbers(flat_view, f"{layer}_count_sum", 0).sum()
+            data_count = None
+            if f"{layer}_data_count_sum" in flat_view.columns:
+                data_counts = nan_as_null(flat_view[f"{layer}_data_count_sum"])
+                if data_counts.null_count < len(data_counts):
+                    data_count = data_counts.sum()
             size = None
             if 'posix' in layer:
-                size = flat_view.get(f"{layer}_size_sum", pd.Series([0.0])).sum()
-            num_files = flat_view.get(f"{layer}_file_name_nunique", pd.Series([0.0])).max()
-            num_processes = flat_view.get(f"{layer}_proc_name_nunique", pd.Series([0.0])).max()
+                size = _numbers(flat_view, f"{layer}_size_sum", 0.0).sum()
+            num_files = _numbers(flat_view, f"{layer}_file_name_nunique", 0.0).max()
+            num_processes = _numbers(flat_view, f"{layer}_proc_name_nunique", 0.0).max()
             u_time_col = f"u_{layer}_{time_metric}"
             u_time = None
             u_count = None
             u_size = None
-            if u_time_col in flat_view:
-                u_time_mask = flat_view[u_time_col] > 0
-                u_times = flat_view.get(u_time_col, pd.Series([0.0]))[u_time_mask]
+            if u_time_col in flat_view.columns:
+                rows = flat_view.num_rows
+                u_time_mask = (_numbers(flat_view, u_time_col, 0.0) > 0).fillna(False)
+                u_times = _numbers(flat_view, u_time_col, 0.0).filter(u_time_mask)
                 u_time = 0.0
-                if u_times.any():
+                if _any_nonzero(u_times):
                     u_time = u_times.max() if is_process_based else u_times.sum()
-                u_counts = flat_view.get(f"{layer}_count_sum", pd.Series([0.0]))[u_time_mask]
-                u_count = u_counts.sum() if u_counts.any() else 0
+                u_counts = _numbers(flat_view, f"{layer}_count_sum", 0, rows).filter(u_time_mask)
+                u_count = u_counts.sum() if _any_nonzero(u_counts) else 0
                 if 'posix' in layer:
-                    u_sizes = flat_view.get(f"{layer}_size_sum", pd.Series([0.0]))[u_time_mask]
-                    u_size = u_sizes.sum() if u_sizes.any() else 0.0
+                    u_sizes = _numbers(flat_view, f"{layer}_size_sum", 0.0, rows).filter(u_time_mask)
+                    u_size = u_sizes.sum() if _any_nonzero(u_sizes) else 0.0
             summary.layer_metrics[layer] = OutputLayerMetrics(
-                time=float('nan') if pd.isna(time) else float(time),
+                time=float('nan') if is_missing(time) else float(time),
                 count=int(count),
-                size=float('nan') if pd.isna(size) else float(size),
-                ops=float('nan') if pd.isna(time) or time == 0 else float(count / time),
-                bandwidth=float('nan') if pd.isna(time) or pd.isna(size) or time == 0 else float(size / time),
-                num_files=0 if pd.isna(num_files) else int(num_files),
-                num_processes=0 if pd.isna(num_processes) else int(num_processes),
-                u_time=None if pd.isna(u_time) else float(u_time),
-                u_count=None if pd.isna(u_count) else int(u_count),
-                u_size=None if pd.isna(u_size) else float(u_size),
-                data_count=None if pd.isna(data_count) else int(data_count),
+                size=float('nan') if is_missing(size) else float(size),
+                ops=float('nan') if is_missing(time) or time == 0 else float(count / time),
+                bandwidth=float('nan') if is_missing(time) or is_missing(size) or time == 0 else float(size / time),
+                num_files=0 if is_missing(num_files) else int(num_files),
+                num_processes=0 if is_missing(num_processes) else int(num_processes),
+                u_time=None if is_missing(u_time) else float(u_time),
+                u_count=None if is_missing(u_count) else int(u_count),
+                u_size=None if is_missing(u_size) else float(u_size),
+                data_count=None if is_missing(data_count) else int(data_count),
             )
         return summary
 
@@ -240,12 +268,12 @@ class ConsoleOutput(Output):
             time_str = self._format_val(layer_metrics.time)
             count_str = self._format_val(layer_metrics.count, fmt_int=True)
             size_str = '-'
-            if not pd.isna(layer_metrics.size):
+            if not is_missing(layer_metrics.size):
                 size_value = layer_metrics.size / MiB
                 size_str = self._format_val(size_value)
             ops_str = f"{layer_metrics.ops:.3f}"
             bandwidth_str = '-'
-            if not pd.isna(layer_metrics.bandwidth):
+            if not is_missing(layer_metrics.bandwidth):
                 bandwidth_str = f"{layer_metrics.bandwidth / MiB:.3f}"
             row = [
                 self._humanized_layer_name(layer),
@@ -316,10 +344,9 @@ class ConsoleOutput(Output):
         for metric in view_additional_metrics:
             if metric not in flat_view.columns:
                 continue
-            metric_series = pd.to_numeric(flat_view[metric], errors='coerce').replace([np.inf, -np.inf], pd.NA)
             scale, unit = self._additional_metric_scale_and_unit(metric)
-            metric_series = metric_series / scale
-            non_null = int(metric_series.notna().sum())
+            metric_series = _finite(flat_view[metric]) / scale
+            non_null = len(metric_series)
             if non_null == 0:
                 additional_table.add_row(metric, unit, "0", "-", "-", "-")
                 found_metric = True
@@ -346,7 +373,7 @@ class ConsoleOutput(Output):
         return f"{value:.3f}"
 
     def _format_overlap_pct(self, time: float, u_time: Optional[float]) -> str:
-        if u_time is None or not np.isfinite(time) or time <= 0 or not np.isfinite(u_time):
+        if u_time is None or not math.isfinite(time) or time <= 0 or not math.isfinite(u_time):
             return 'N/A'
         ovlp_pct = max(0.0, min(1.0, 1.0 - u_time / time))
         color = self._percentage_color(ovlp_pct)
@@ -409,13 +436,14 @@ class JSONOutput(Output):
 
     @staticmethod
     def _to_int_or_none(value):
-        if value is None or pd.isna(value):
+        if is_missing(value):
             return None
         return int(value)
 
     @staticmethod
     def _to_float_or_none(value):
-        if value is None or pd.isna(value):
+        """`value` as a float, or None when it is missing or not finite, so `allow_nan=False` never fails."""
+        if value is None or not math.isfinite(value):
             return None
         return float(value)
 
@@ -465,10 +493,9 @@ class JSONOutput(Output):
         for metric in view_additional_metrics:
             if metric not in flat_view.columns:
                 continue
-            metric_series = pd.to_numeric(flat_view[metric], errors='coerce').replace([np.inf, -np.inf], np.nan)
             scale, unit = self._additional_metric_scale_and_unit(metric)
-            metric_series = metric_series / scale
-            non_null = int(metric_series.notna().sum())
+            metric_series = _finite(flat_view[metric]) / scale
+            non_null = len(metric_series)
             metric_payload = {
                 "unit": unit,
                 "non_null": non_null,
@@ -479,9 +506,9 @@ class JSONOutput(Output):
             if non_null > 0:
                 metric_payload.update(
                     {
-                        "min": float(metric_series.min()),
-                        "mean": float(metric_series.mean()),
-                        "max": float(metric_series.max()),
+                        "min": self._to_float_or_none(metric_series.min()),
+                        "mean": self._to_float_or_none(metric_series.mean()),
+                        "max": self._to_float_or_none(metric_series.max()),
                     }
                 )
             payload[metric] = metric_payload
@@ -514,7 +541,9 @@ class FileOutput(Output):
     """output=file: write the offline deliverable bundle to ``path``.
 
     Writes facts.jsonl (analysis facts, one envelope per call -> per window in
-    streaming), detail_view_*.parquet (the per-entity views), and raw_stats.json.
+    streaming), detail_view_*.pfw.gz (the per-entity views as dftracer-utils tables,
+    read back with `checkpoint_table.read_table`), and raw_stats.json. The table writer can
+    also leave its index in a hidden .dftindex folder.
     Consumed by ``dfdiagnoser input=file``. Distinct from the checkpoint, which
     only caches hlm/main_view/raw_stats for recompute.
     """
@@ -547,13 +576,10 @@ class FileOutput(Output):
             self._facts_started = True
             logger.info("file_output.facts", path=str(facts_path))
 
-        # detail_view_*.parquet — the per-entity views
+        # detail_view_*.pfw.gz — the per-entity views
         for view_key, flat_view in result.flat_views.items():
-            view_path = out_dir / f"detail_view_{'_'.join(view_key)}.parquet"
-            try:
-                flat_view.to_parquet(view_path)
-            except Exception:
-                logger.warning("file_output.detail_view_failed", view_key=list(view_key), exc_info=True)
+            name = f"detail_view_{'_'.join(view_key)}"
+            write_table(flat_view, str(out_dir / f"{name}.pfw.gz"), name)
 
         # raw_stats.json — run context
         try:

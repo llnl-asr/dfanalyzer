@@ -8,6 +8,7 @@ exactly -- values, dtypes, column order, index -- so a change to the hot path
 has to prove it produced identical output, not merely similar numbers.
 """
 
+import math
 import os
 import pickle
 import sys
@@ -32,7 +33,8 @@ def capture(trace_dir, preset, out_dir):
         "raw_stats": raw if isinstance(raw, dict) else raw.__dict__,
         "layers": list(result.layers),
         "view_types": list(result.view_types),
-        "flat_views": {k: v.copy() for k, v in result.flat_views.items()},
+        # Library frames are stored as pandas, so a capture compares with one from a pandas build.
+        "flat_views": {k: v.to_pandas(nullable=True) for k, v in result.flat_views.items()},
     }
     with open(os.path.join(out_dir, "capture.pkl"), "wb") as f:
         pickle.dump(payload, f)
@@ -42,8 +44,48 @@ def capture(trace_dir, preset, out_dir):
     dfa.shutdown()
 
 
-def compare(dir_a, dir_b):
+_NULLABLE = {"b": "boolean", "i": "Int64", "u": "UInt64", "f": "Float64"}
+
+
+def _is_text_or_missing(value) -> bool:
     import pandas as pd
+
+    return isinstance(value, str) or value is None or value is pd.NA or (isinstance(value, float) and math.isnan(value))
+
+
+def _nullable(values):
+    """`values` in the pandas nullable dtype of its family: an int stays an int and a float a float."""
+    import pandas as pd
+
+    if isinstance(values.dtype, pd.CategoricalDtype):
+        categories = values.dtype.categories
+        kind = categories.dtype.kind
+        text = kind in "OU" and all(isinstance(c, str) for c in categories)
+        target = _NULLABLE.get(kind, "string" if text else None)
+        return values.astype(object).astype(target) if target else values.astype(object)
+    kind = values.dtype.kind
+    if kind in _NULLABLE:
+        return values.astype(_NULLABLE[kind])
+    if kind in "OU" and all(_is_text_or_missing(v) for v in values):
+        return values.astype("string")
+    return values
+
+
+def _normalized(frame):
+    """`frame` with columns and index levels in the pandas nullable dtype of their kind, so a pandas-build
+    capture (numpy dtypes, object index) and a library-build one compare by value and dtype family."""
+    import pandas as pd
+
+    out = pd.DataFrame({c: _nullable(frame[c]) for c in frame.columns}, index=frame.index)
+    levels = [_nullable(pd.Series(frame.index.get_level_values(i))) for i in range(frame.index.nlevels)]
+    if len(levels) > 1:
+        out.index = pd.MultiIndex.from_arrays(levels, names=frame.index.names)
+    else:
+        out.index = pd.Index(levels[0], name=frame.index.name)
+    return out
+
+
+def compare(dir_a, dir_b):
     from pandas.testing import assert_frame_equal
 
     a = pickle.load(open(os.path.join(dir_a, "capture.pkl"), "rb"))
@@ -64,7 +106,7 @@ def compare(dir_a, dir_b):
         problems.append(f"view keys differ: only_a={sorted(keys_a - keys_b)} only_b={sorted(keys_b - keys_a)}")
 
     for k in sorted(keys_a & keys_b, key=str):
-        fa, fb = a["flat_views"][k], b["flat_views"][k]
+        fa, fb = _normalized(a["flat_views"][k]), _normalized(b["flat_views"][k])
         try:
             assert_frame_equal(fa, fb, check_dtype=True, check_like=False, check_exact=False, rtol=1e-9)
         except AssertionError as exc:
