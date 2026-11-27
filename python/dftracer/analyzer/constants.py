@@ -1,4 +1,4 @@
-import numpy as np
+import math
 from enum import Enum, auto
 from strenum import LowercaseStrEnum, StrEnum
 
@@ -230,7 +230,7 @@ HUMANIZED_LAYERS = dict(
     checkpoint_posix_lustre='POSIX - Checkpoint (Lustre)',
     checkpoint_posix_ssd='POSIX - Checkpoint (SSD)',
     other_posix='POSIX - Other',
-    # cat + POSIX_CAT_RULES suffixes
+    # cat + TraceRules.posix_cat_rules suffixes
     posix_lustre='POSIX - All (Lustre)',
     posix_gpfs='POSIX - All (GPFS)',
     posix_ssd='POSIX - All (SSD)',
@@ -294,7 +294,7 @@ MiB = KiB * KiB
 GiB = KiB * MiB
 
 SIZE_BINS = [
-    -np.inf,
+    -math.inf,
     4 * KiB,
     16 * KiB,
     64 * KiB,
@@ -306,7 +306,7 @@ SIZE_BINS = [
     256 * MiB,
     1 * GiB,
     4 * GiB,
-    np.inf,
+    math.inf,
 ]
 SIZE_BIN_LABELS = [
     '<4 KiB',

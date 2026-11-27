@@ -1,20 +1,25 @@
 import dataclasses as dc
-import importlib.util
 import math
 import os
 from pathlib import Path
-import pandas as pd
 import structlog
 from typing import Any, Dict, List, Mapping, Optional
+from dftracer.utils import DataFrame, Series
 from omegaconf import OmegaConf
 
+from .analysis_utils import is_missing, nan_as_null
+from .frames.expr import evaluate
 from .fact_rules import FactRule, FactRuleValidationError, build_fact_rule
 from .scoring import normalize_slope
 from .types import AnalysisFact, FactProvenance, FactScope, FactSeverity, FactWindow, ViewKey
 
 
 logger = structlog.get_logger()
-HAS_NUMEXPR = importlib.util.find_spec("numexpr") is not None
+_VALUE = "__fact_value"
+_SEVERITY = "__fact_severity"
+_CONFIDENCE = "__fact_confidence"
+_POSITION = "__fact_position"
+_RANK = "__fact_rank"
 
 RESERVED_IDENTIFIERS = {
     "True",
@@ -43,20 +48,23 @@ def _as_dict(raw_stats: Any) -> Dict[str, Any]:
 
 
 def _to_scalar(value: Any) -> Any:
-    if pd.isna(value):
-        return None
-    if hasattr(value, "item"):
-        try:
-            return value.item()
-        except Exception:
-            return value
-    return value
+    return None if is_missing(value) else value
 
 
-def _to_series(df: pd.DataFrame, value: Any) -> pd.Series:
-    if isinstance(value, pd.Series):
+def _to_series(df: DataFrame, value: Any) -> Series:
+    """`value` as a Series with the row labels of `df`; a scalar repeats on every row."""
+    if isinstance(value, Series):
         return value
-    return pd.Series([value] * len(df), index=df.index)
+    out = df[[]]
+    out[_VALUE] = Series([value] * df.num_rows)
+    return out[_VALUE]
+
+
+def _first_row(df: DataFrame, names) -> dict[str, Any]:
+    """The values of the columns `names` on the first row of `df`, a missing column as None."""
+    row = df.head(1).to_dicts()
+    row = row[0] if row else {}
+    return {m: _to_scalar(row.get(m)) for m in names}
 
 
 def _to_float_or_none(value: Any) -> Optional[float]:
@@ -93,7 +101,7 @@ def _severity_label(score: float) -> str:
 
 
 def _clip01(value: Any) -> Any:
-    if isinstance(value, pd.Series):
+    if isinstance(value, Series):
         return value.clip(lower=0.0, upper=1.0)
     try:
         return min(1.0, max(0.0, float(value)))
@@ -102,85 +110,63 @@ def _clip01(value: Any) -> Any:
 
 
 def _fillna0(value: Any) -> Any:
-    if isinstance(value, pd.Series):
+    if isinstance(value, Series):
         return value.fillna(0.0)
-    if value is None:
-        return 0.0
-    try:
-        return 0.0 if pd.isna(value) else value
-    except Exception:
-        return value
+    return 0.0 if is_missing(value) else value
 
 
-def _to_float_series(x):
-    """Convert to float64 Series/array, replacing pd.NA with np.nan."""
-    if isinstance(x, pd.Series):
-        return x.astype("Float64").to_numpy(dtype="float64", na_value=float("nan"))
-    return x
+def _na_safe_pick(a: Any, b: Any, prefer_a) -> Any:
+    """`a` or `b` per row by `prefer_a(a, b)`; a missing value loses to a number."""
+    if not isinstance(a, Series):
+        a, b = b, a
+    a = nan_as_null(a, as_float=True)
+    if isinstance(b, Series):
+        b = nan_as_null(b, as_float=True)
+        return a.where(prefer_a(a, b).fillna(False) | b.is_null(), b)
+    if is_missing(b):
+        return a
+    return a.where(prefer_a(a, b).fillna(False), float(b))
 
 
 def _na_safe_max(*args):
-    """NA-safe max that works on pandas Series with nullable dtypes."""
-    import numpy as np
-
+    """`max` of numbers or Series; on a Series a missing value loses to a number, as `np.fmax`."""
     result = args[0]
     for arg in args[1:]:
-        if isinstance(result, pd.Series) or isinstance(arg, pd.Series):
-            idx = result.index if isinstance(result, pd.Series) else arg.index
-            result = pd.Series(
-                np.fmax(_to_float_series(result), _to_float_series(arg)),
-                index=idx,
-            )
+        if isinstance(result, Series) or isinstance(arg, Series):
+            result = _na_safe_pick(result, arg, lambda a, b: a >= b)
         else:
             result = max(result, arg)
     return result
 
 
 def _na_safe_min(*args):
-    """NA-safe min that works on pandas Series with nullable dtypes."""
-    import numpy as np
-
+    """`min` of numbers or Series; on a Series a missing value loses to a number, as `np.fmin`."""
     result = args[0]
     for arg in args[1:]:
-        if isinstance(result, pd.Series) or isinstance(arg, pd.Series):
-            idx = result.index if isinstance(result, pd.Series) else arg.index
-            result = pd.Series(
-                np.fmin(_to_float_series(result), _to_float_series(arg)),
-                index=idx,
-            )
+        if isinstance(result, Series) or isinstance(arg, Series):
+            result = _na_safe_pick(result, arg, lambda a, b: a <= b)
         else:
             result = min(result, arg)
     return result
 
 
-def _eval_python_expr(df: pd.DataFrame, expression: str) -> pd.Series:
-    local_env: Dict[str, Any] = {column: df[column] for column in df.columns}
-    local_env.update(
-        {
-            "max": _na_safe_max,
-            "min": _na_safe_min,
-            "abs": abs,
-            "clip01": _clip01,
-            "fillna0": _fillna0,
-            "math": math,
-        }
-    )
-    result = eval(expression, {"__builtins__": {}}, local_env)
-    return _to_series(df, result)
+def _abs(value: Any) -> Any:
+    return value.abs() if isinstance(value, Series) else abs(value)
 
 
-def _eval_expr(df: pd.DataFrame, expression: str) -> pd.Series:
-    # Use numexpr first when available for speed; then pandas python engine;
-    # finally restricted eval for aggregate-style expressions.
-    if HAS_NUMEXPR:
-        try:
-            return _to_series(df, df.eval(expression, engine="numexpr"))
-        except Exception:
-            pass
-    try:
-        return _to_series(df, df.eval(expression, engine="python"))
-    except Exception:
-        return _eval_python_expr(df, expression)
+FACT_HELPERS: dict[str, Any] = {
+    "max": _na_safe_max,
+    "min": _na_safe_min,
+    "abs": _abs,
+    "clip01": _clip01,
+    "fillna0": _fillna0,
+    "math": math,
+}
+
+
+def _eval_expr(df: DataFrame, expression: str) -> Series:
+    """A fact rule expression on `df`, one value per row."""
+    return _to_series(df, evaluate(df, expression, names=FACT_HELPERS))
 
 
 DEFAULT_AGG_TOP_K = 5
@@ -263,7 +249,7 @@ class FactEngine:
 
     def evaluate(
         self,
-        flat_views: Dict[ViewKey, pd.DataFrame],
+        flat_views: Dict[ViewKey, DataFrame],
         raw_stats: Any,
     ) -> Dict[ViewKey, List[AnalysisFact]]:
         if not self.rules:
@@ -294,7 +280,7 @@ class FactEngine:
 
     def _evaluate_view_rules(
         self,
-        rule_df: pd.DataFrame,
+        rule_df: DataFrame,
         rules: List[FactRule],
         raw_stats: Dict[str, Any],
         view_key: ViewKey,
@@ -312,7 +298,7 @@ class FactEngine:
                 logger.debug("facts.rule.skip", rule_id=rule.id, reason="missing_metrics", missing=missing_required)
                 continue
 
-            working_df = rule_df.loc[:, projected_columns].copy()
+            working_df = rule_df[projected_columns]
 
             try:
                 for metric_name, expression in rule.derived_metrics.items():
@@ -324,10 +310,7 @@ class FactEngine:
             # Log derived metric values for debugging rule evaluation
             if rule.derived_metrics:
                 try:
-                    derived_sample = {
-                        m: _to_scalar(working_df[m].iloc[0]) if m in working_df.columns else None
-                        for m in rule.derived_metrics
-                    }
+                    derived_sample = _first_row(working_df, rule.derived_metrics)
                 except Exception:
                     derived_sample = {}
                 logger.debug(
@@ -351,13 +334,10 @@ class FactEngine:
                 continue
 
             condition_series = _eval_expr(working_df, rule.when)
-            condition_mask = condition_series.fillna(False).astype(bool)
+            condition_mask = condition_series.fillna(False).astype("bool")
             if not condition_mask.any():
                 try:
-                    derived_vals = {
-                        m: _to_scalar(working_df[m].iloc[0]) if m in working_df.columns else None
-                        for m in rule.derived_metrics
-                    }
+                    derived_vals = _first_row(working_df, rule.derived_metrics)
                 except Exception:
                     derived_vals = {}
                 logger.debug(
@@ -366,7 +346,7 @@ class FactEngine:
                     derived_metrics=derived_vals,
                     when_result=False,
                     when=rule.when,
-                    rows=len(working_df),
+                    rows=working_df.num_rows,
                 )
                 continue
 
@@ -430,9 +410,9 @@ class FactEmitter:
         view_type: str,
         view_key: ViewKey,
         run_id,
-        working_df: pd.DataFrame,
-        condition_mask: pd.Series,
-        severity_series: pd.Series,
+        working_df: DataFrame,
+        condition_mask: Series,
+        severity_series: Series,
         confidence_series,
         evidence_metric_cols: List[str],
         opportunity_tags: List[str],
@@ -443,7 +423,7 @@ class FactEmitter:
         time_granularity: Optional[float] = None,
         time_resolution: Optional[float] = None,
     ) -> List[AnalysisFact]:
-        if int(condition_mask.sum()) == 0:
+        if not condition_mask.any():
             return []
         # Temporal (window) views never collapse to an aggregate -- that would
         # collapse the time series the diagnoser needs. They always emit per row.
@@ -467,6 +447,44 @@ class FactEmitter:
             time_resolution=time_resolution,
         )
 
+    def _matched_rows(self, working_df, condition_mask, severity_series, confidence_series):
+        """The rows of `working_df` where `condition_mask` holds, in row order, and the names of their label columns.
+
+        The index levels become the label columns; a frame with no index has none. Severity
+        and confidence come along as columns, NaN as missing; `_POSITION` is the row number.
+        """
+        scored = working_df.copy()
+        scored[_SEVERITY] = nan_as_null(severity_series, as_float=True)
+        if confidence_series is not None:
+            scored[_CONFIDENCE] = nan_as_null(confidence_series, as_float=True)
+        scored[_POSITION] = Series(list(range(scored.num_rows)), dtype="int64")
+        matched = scored.filter(condition_mask)
+        if not working_df.index_names():
+            return matched, []
+        # `reset_index` names an unnamed level `index`, which `index_names` does not report.
+        matched = matched.reset_index()
+        return matched, [c for c in matched.columns if c not in scored.columns]
+
+    @staticmethod
+    def _entity(row: dict[str, Any], label_columns: list[str]) -> Any:
+        """The row's index label; the row number for a frame with no index, as the pandas default index."""
+        if not label_columns:
+            return row[_POSITION]
+        if len(label_columns) == 1:
+            return row[label_columns[0]]
+        return tuple(row[name] for name in label_columns)
+
+    def _top_k(self, matched: DataFrame) -> DataFrame:
+        """The `top_k` rows by severity as pandas `Series.nlargest` picks them: ties in row order, missing last."""
+        # `top_k` ranks lexicographically; the negated row number keeps the first of equal severities.
+        ranked = matched.filter(matched[_SEVERITY].is_not_null())
+        ranked[_RANK] = ranked[_POSITION] * -1
+        ranked = ranked.top_k(self.top_k, by=[_SEVERITY, _RANK]).drop(columns=[_RANK])
+        if ranked.num_rows < self.top_k:
+            missing = matched.filter(matched[_SEVERITY].is_null()).head(self.top_k - ranked.num_rows)
+            ranked = ranked.concat(missing)
+        return ranked
+
     def _aggregate(
         self, *, fact_type, scope_layer, view_type, run_id, working_df, condition_mask,
         severity_series, confidence_series, evidence_metric_cols, opportunity_tags,
@@ -475,26 +493,26 @@ class FactEmitter:
         """Roll the per-entity evaluation up into one aggregate fact for the
         whole view: count/fraction over threshold, the worst-K entities, and the
         aggregate (max) severity. Reuses the row-wise mask/severity — no second pass."""
-        affected_count = int(condition_mask.sum())
-        total_count = int(len(working_df))
+        matched, label_columns = self._matched_rows(working_df, condition_mask, severity_series, confidence_series)
+        affected_count = matched.num_rows
+        total_count = working_df.num_rows
         if affected_count == 0:
             return None
 
-        matched_sev = severity_series[condition_mask]
-        agg_severity = _to_float_or_none(_to_scalar(matched_sev.max()))
+        agg_severity = _to_float_or_none(matched[_SEVERITY].max())
         agg_severity = 0.0 if agg_severity is None else agg_severity
         agg_confidence = 1.0
         if confidence_series is not None:
-            conf = _to_float_or_none(_to_scalar(confidence_series[condition_mask].max()))
+            conf = _to_float_or_none(matched[_CONFIDENCE].max())
             agg_confidence = 1.0 if conf is None else conf
 
         metric_cols = [m for m in evidence_metric_cols if m in working_df.columns]
         top_k = []
-        for entity_idx, sev in matched_sev.nlargest(self.top_k).items():
+        for row in self._top_k(matched).to_dicts():
             top_k.append({
-                "entity": str(entity_idx),
-                "severity": _to_float_or_none(_to_scalar(sev)),
-                "metrics": {m: _to_scalar(working_df.loc[entity_idx, m]) for m in metric_cols},
+                "entity": str(self._entity(row, label_columns)),
+                "severity": _to_float_or_none(row[_SEVERITY]),
+                "metrics": {m: _to_scalar(row[m]) for m in metric_cols},
             })
 
         fact = AnalysisFact(
@@ -525,18 +543,18 @@ class FactEmitter:
         suppresses_tags, provenance, trigger, severity_method, time_granularity, time_resolution,
     ) -> List[AnalysisFact]:
         """Emit one fact per matched entity (the per-entity drill-down form)."""
+        columns = set(working_df.columns)
+        matched, label_columns = self._matched_rows(working_df, condition_mask, severity_series, confidence_series)
         facts: List[AnalysisFact] = []
-        for row_index in list(working_df.index[condition_mask]):
-            row = working_df.loc[row_index]
-            severity_score = _to_float_or_none(_to_scalar(severity_series.loc[row_index]))
+        for row in matched.to_dicts():
+            row_index = self._entity(row, label_columns)
+            severity_score = _to_float_or_none(row[_SEVERITY])
             severity_score = 0.0 if severity_score is None else severity_score
             confidence = 1.0
             if confidence_series is not None:
-                confidence = _to_float_or_none(_to_scalar(confidence_series.loc[row_index]))
+                confidence = _to_float_or_none(row[_CONFIDENCE])
                 confidence = 1.0 if confidence is None else confidence
-            evidence_metrics = {
-                m: _to_scalar(row.get(m)) for m in evidence_metric_cols if m in working_df.columns
-            }
+            evidence_metrics = {m: _to_scalar(row[m]) for m in evidence_metric_cols if m in columns}
 
             window_index = epoch = step = time_bucket = t0_ns = t1_ns = None
             # Each temporal view's row index IS its longitudinal coordinate, stamped
@@ -549,16 +567,16 @@ class FactEmitter:
                 window_index = _to_int_or_none(row_index)
             if view_type == "epoch":
                 epoch = _to_int_or_none(row_index)
-            elif "epoch" in row.index and row.get("epoch") is not None and not pd.isna(row.get("epoch")):
-                epoch = _to_int_or_none(row.get("epoch"))
+            elif "epoch" in columns and not is_missing(row["epoch"]):
+                epoch = _to_int_or_none(row["epoch"])
             if view_type == "step":
                 step = _to_int_or_none(row_index)
-            elif "step" in row.index and row.get("step") is not None and not pd.isna(row.get("step")):
-                step = _to_int_or_none(row.get("step"))
+            elif "step" in columns and not is_missing(row["step"]):
+                step = _to_int_or_none(row["step"])
             if view_type == "time_range":
                 time_bucket = _to_int_or_none(row_index)
-                if time_bucket is None and "time_range" in row.index:
-                    time_bucket = _to_int_or_none(row.get("time_range"))
+                if time_bucket is None and "time_range" in columns:
+                    time_bucket = _to_int_or_none(row["time_range"])
                 if time_bucket is not None and time_granularity is not None and time_resolution is not None:
                     interval_us = time_granularity * time_resolution
                     if interval_us > 0:
@@ -628,7 +646,7 @@ class MetricFactBuilder:
 
     def evaluate(
         self,
-        flat_views: Dict[ViewKey, pd.DataFrame],
+        flat_views: Dict[ViewKey, DataFrame],
         raw_stats: Any,
     ) -> Dict[ViewKey, List[AnalysisFact]]:
         raw_stats_dict = _as_dict(raw_stats)
@@ -652,7 +670,7 @@ class MetricFactBuilder:
             return []
         facts: List[AnalysisFact] = []
         for slope_col in slope_cols:
-            severity_series = normalize_slope(pd.to_numeric(view_df[slope_col], errors="coerce"))
+            severity_series = normalize_slope(view_df[slope_col].astype("float64"))
             condition_mask = severity_series.fillna(0.0) >= self.severity_floor
             if not condition_mask.any():
                 continue

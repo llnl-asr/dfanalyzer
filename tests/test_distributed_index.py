@@ -2,7 +2,7 @@
 
 Runs the full SST-based distributed indexer on a Dask LocalCluster with
 synthetic .pfw.gz traces and compares the resulting index against a
-serial `Indexer(...).ensure_indexed()` baseline on identical inputs.
+serial `Indexer(...).ensure()` baseline on identical inputs.
 """
 
 import gzip
@@ -14,9 +14,11 @@ pytest.importorskip("dask.distributed")
 pytest.importorskip("dftracer.analyzer.dftracer")
 pytest.importorskip("pyarrow")
 
+from dftracer.analyzer.cluster import NullClient  # noqa: E402
 from dftracer.analyzer.dftracer import DFTracerAnalyzer  # noqa: E402
-from dftracer.utils.dfanalyzer import build_index_distributed  # noqa: E402
-from dftracer.utils import AggregationConfig, Indexer  # noqa: E402
+from dftracer.analyzer.trace_index import TraceRun, aggregation_config, build_index_distributed  # noqa: E402
+from dftracer.analyzer.typed_read import ReadSettings, read_frames  # noqa: E402
+from dftracer.utils.index import Indexer  # noqa: E402
 
 
 def _write_trace(path: str, pid: int, n_events: int) -> None:
@@ -54,12 +56,18 @@ def _make_workload(root: str, n_files: int = 4, n_events: int = 200) -> list:
     return files
 
 
-def _read_agg_frames(files: list, index_path: str) -> dict:
+def _read_agg_frames(files: list, index_dir: str) -> dict:
     """The dfanalyzer {events, profiles, system} frames read from the index via
-    the View typed read."""
-    from dftracer.utils.dfanalyzer import view_typed_frames
+    the View typed read, an absent family as an empty frame."""
+    from dftracer.utils import DataFrame
 
-    return view_typed_frames(files, index_path)
+    fr = read_frames(TraceRun(tuple(files), index_dir, NullClient()), ReadSettings())
+    empty = DataFrame.from_dict({})
+    return {
+        "events": fr["traces"],
+        "profiles": fr["profiles"] if fr["profiles"] is not None else empty,
+        "system": fr["system"] if fr["system"] is not None else empty,
+    }
 
 
 def test_distributed_index_localcluster_matches_serial(tmp_path):
@@ -67,59 +75,41 @@ def test_distributed_index_localcluster_matches_serial(tmp_path):
 
     serial_dir = tmp_path / "serial"
     dist_dir = tmp_path / "dist"
-    stage_dir = tmp_path / "stage"
     serial_dir.mkdir()
     dist_dir.mkdir()
-    stage_dir.mkdir()
 
     serial_files = _make_workload(str(serial_dir))
     dist_files = _make_workload(str(dist_dir))
 
-    agg = AggregationConfig(time_interval_ms=5000)
+    agg = aggregation_config(5000)
 
-    serial_idx = Indexer(
-        files=serial_files,
-        require_aggregation=agg,
-        force_rebuild=True,
-    )
-    serial_status = serial_idx.ensure_indexed()
+    serial_index = str(serial_dir / ".dftindex")
+    serial_idx = Indexer(serial_files, index_dir=serial_index, aggregation_config=agg)
+    serial_status = serial_idx.build(force=True)
     assert len(serial_status.ready) == len(serial_files)
-    serial_tables = _read_agg_frames(serial_files, str(serial_dir))
+    serial_tables = _read_agg_frames(serial_files, serial_index)
     serial_idx.close()
 
-    index_path = str(dist_dir / ".dftindex")
+    index_dir = str(dist_dir / ".dftindex")
     cluster = LocalCluster(n_workers=2, threads_per_worker=1, processes=True)
     client = Client(cluster)
     try:
         client.wait_for_workers(2, timeout=60)
-        result = build_index_distributed(
-            files=dist_files,
-            index_path=index_path,
-            local_staging=str(stage_dir),
-            shared_staging=str(stage_dir),
-            client=client,
-            aggregation=agg,
-        )
+        result = build_index_distributed(dist_files, index_dir=index_dir, client=client, aggregation=agg)
     finally:
         client.close()
         cluster.close()
 
     assert result["total_files"] == len(dist_files)
-    assert result["artifact_batches"] > 0
-    assert os.path.exists(index_path)
+    assert os.path.exists(index_dir)
     assert sum(1 for n in result["per_worker"] if n > 0) >= 1
 
-    dist_idx = Indexer(
-        files=dist_files,
-        index_dir=str(dist_dir),
-        require_aggregation=agg,
-        force_rebuild=False,
-    )
-    dist_status = dist_idx.ensure_indexed()
+    dist_idx = Indexer(dist_files, index_dir=index_dir, aggregation_config=agg)
+    dist_status = dist_idx.ensure()
     assert len(dist_status.ready) == len(dist_files), (
         f"distributed index missed files: {dist_status.needs_work}"
     )
-    dist_tables = _read_agg_frames(dist_files, str(dist_dir))
+    dist_tables = _read_agg_frames(dist_files, index_dir)
     dist_idx.close()
 
     for key in ("events", "profiles", "system"):
@@ -146,12 +136,10 @@ def test_distributed_index_then_analyze_trace(tmp_path):
     from dftracer.analyzer.config import AnalyzerPresetConfigPOSIX
 
     dist_dir = tmp_path / "dist"
-    stage_dir = tmp_path / "stage"
     dist_dir.mkdir()
-    stage_dir.mkdir()
 
     files = _make_workload(str(dist_dir), n_files=4, n_events=200)
-    agg = AggregationConfig(time_interval_ms=5000)
+    agg = aggregation_config(5000)
 
     cluster = LocalCluster(n_workers=2, threads_per_worker=1, processes=True)
     client = Client(cluster)
@@ -159,14 +147,7 @@ def test_distributed_index_then_analyze_trace(tmp_path):
         client.wait_for_workers(2, timeout=60)
 
         # Phase 1: distributed index build (also registers _AutoThreadPlugin).
-        build_index_distributed(
-            files=files,
-            index_path=str(dist_dir / ".dftindex"),
-            local_staging=str(stage_dir),
-            shared_staging=str(stage_dir),
-            client=client,
-            aggregation=agg,
-        )
+        build_index_distributed(files, index_dir=str(dist_dir / ".dftindex"), client=client, aggregation=agg)
 
         # Phase 2: instantiate analyzer directly (no init_with_hydra) and
         # call analyze_trace. read_trace will call _register_dask_plugin a

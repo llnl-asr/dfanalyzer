@@ -305,8 +305,8 @@ def test_read_trace_standardizes_profiles_and_aligns_to_5s_grid(dask_client, hyb
         extra_columns_fn=None,
     )
 
-    traces = read_result.traces.compute()
-    profiles = read_result.profiles.compute()
+    traces = read_result.traces
+    profiles = read_result.profiles
 
     assert len(traces) == 1
     assert len(profiles) == 1
@@ -349,7 +349,7 @@ def test_read_trace_uses_host_hash_in_proc_name_when_host_name_is_missing(
         extra_columns_fn=None,
     )
 
-    profiles = read_result.profiles.compute()
+    profiles = read_result.profiles
 
     assert len(profiles) == 1
     assert profiles.iloc[0]["host_name"] is None or str(profiles.iloc[0]["host_name"]) == "<NA>"
@@ -369,7 +369,7 @@ def test_read_trace_coalesces_duplicate_full_profile_rows(dask_client, full_hybr
         extra_columns_fn=None,
     )
 
-    profiles = read_result.profiles.compute()
+    profiles = read_result.profiles
     item_profiles = profiles[profiles["func_name"] == "item"].reset_index(drop=True)
 
     assert len(item_profiles) == 1
@@ -391,7 +391,7 @@ def test_analyze_trace_reconciles_hybrid_hlm_and_tracks_raw_stats(dask_client, h
     assert int(result.raw_stats.profile_event_count) == 3
     assert int(result.raw_stats.total_event_count) == 4
 
-    posix_hlm = result.get_hlm("posix").compute().reset_index()
+    posix_hlm = result.get_hlm("posix").reset_index()
 
     assert set(posix_hlm["func_name"]) == {"read", "open64"}
     by_func = posix_hlm.set_index("func_name")
@@ -417,10 +417,10 @@ def test_analyze_trace_reconciles_profiles_per_layer_for_full_hybrid_case(
 
     assert result.profiles is not None
 
-    app_hlm = result.get_hlm("app").compute().reset_index()
-    compute_hlm = result.get_hlm("compute").compute().reset_index()
-    data_hlm = result.get_hlm("data_loader").compute().reset_index()
-    posix_hlm = result.get_hlm("posix").compute().reset_index()
+    app_hlm = result.get_hlm("app").reset_index()
+    compute_hlm = result.get_hlm("compute").reset_index()
+    data_hlm = result.get_hlm("data_loader").reset_index()
+    posix_hlm = result.get_hlm("posix").reset_index()
 
     assert set(app_hlm["func_name"]) == {"ai_root"}
     assert set(compute_hlm["func_name"]) == {"compute"}
@@ -442,7 +442,7 @@ def test_analyze_trace_expands_profiles_when_granularity_finer_than_bucket(dask_
         view_types=["proc_name", "time_range"],
     )
 
-    profiles = result.profiles.compute()
+    profiles = result.profiles
 
     # Original had 1 profile row; with expansion_factor=5 we expect 5 rows
     assert len(profiles) == 5
@@ -513,7 +513,7 @@ def test_analyze_trace_expands_profiles_with_weighted_distribution(dask_client, 
         view_types=["proc_name", "time_range"],
     )
 
-    profiles = result.profiles.compute()
+    profiles = result.profiles
     assert len(profiles) == 5
 
     sorted_profiles = profiles.sort_values("time_start").reset_index(drop=True)
@@ -551,7 +551,7 @@ def test_analyze_trace_accepts_finer_aligned_granularity(dask_client, hybrid_tra
         view_types=["proc_name", "time_range"],
     )
 
-    profiles = result.profiles.compute()
+    profiles = result.profiles
     # 5s / 2.5s = 2 sub-buckets per original profile row
     assert len(profiles) == 2
     assert int(profiles["count"].sum()) == 3
@@ -587,7 +587,7 @@ def test_read_trace_handles_dur_field_without_dur_sum(dask_client, tmp_path):
 
     profiles = analyzer.read_trace(
         trace_path=str(path), extra_columns=None, extra_columns_fn=None,
-    ).profiles.compute()
+    ).profiles
 
     assert len(profiles) == 1
     p = profiles.iloc[0]
@@ -623,7 +623,7 @@ def test_read_trace_handles_profile_without_fhash(dask_client, tmp_path):
 
     profiles = analyzer.read_trace(
         trace_path=str(path), extra_columns=None, extra_columns_fn=None,
-    ).profiles.compute()
+    ).profiles
 
     assert len(profiles) == 1
     p = profiles.iloc[0]
@@ -656,7 +656,7 @@ def test_read_trace_preserves_stat_columns_from_aggregation_fields(dask_client, 
 
     profiles = analyzer.read_trace(
         trace_path=str(path), extra_columns=None, extra_columns_fn=None,
-    ).profiles.compute()
+    ).profiles
 
     assert len(profiles) == 1
     p = profiles.iloc[0]
@@ -690,7 +690,7 @@ def test_read_trace_returns_none_profiles_when_no_counter_events(dask_client, tm
 
     assert result.profiles is None
     assert result.profile_time_granularity is None
-    traces = result.traces.compute()
+    traces = result.traces
     assert len(traces) == 1
 
 
@@ -719,7 +719,7 @@ def test_read_trace_handles_multiple_profile_buckets(dask_client, tmp_path):
 
     profiles = analyzer.read_trace(
         trace_path=str(path), extra_columns=None, extra_columns_fn=None,
-    ).profiles.compute()
+    ).profiles
 
     # 2 read buckets at different ts + 1 write bucket = 3 rows
     assert len(profiles) == 3
@@ -758,7 +758,7 @@ def test_coalesce_takes_min_of_mins_and_max_of_maxes(dask_client, tmp_path):
 
     profiles = analyzer.read_trace(
         trace_path=str(path), extra_columns=None, extra_columns_fn=None,
-    ).profiles.compute()
+    ).profiles
 
     assert len(profiles) == 1
     p = profiles.iloc[0]
@@ -795,7 +795,7 @@ def test_expansion_preserves_stat_columns_across_sub_buckets(dask_client, tmp_pa
         view_types=["proc_name", "time_range"],
     )
 
-    profiles = result.profiles.compute()
+    profiles = result.profiles
     assert len(profiles) == 5
 
     # Every sub-bucket should carry the same stat bounds
@@ -849,10 +849,10 @@ def test_analyze_trace_non_posix_profiles_map_to_correct_layers(dask_client, tmp
         view_types=["proc_name", "time_range"],
     )
 
-    comm_hlm = result.get_hlm("comm").compute().reset_index()
-    device_hlm = result.get_hlm("device").compute().reset_index()
-    compute_hlm = result.get_hlm("compute").compute().reset_index()
-    data_hlm = result.get_hlm("data_loader").compute().reset_index()
+    comm_hlm = result.get_hlm("comm").reset_index()
+    device_hlm = result.get_hlm("device").reset_index()
+    compute_hlm = result.get_hlm("compute").reset_index()
+    data_hlm = result.get_hlm("data_loader").reset_index()
 
     assert set(comm_hlm["func_name"]) == {"all_reduce"}
     assert int(comm_hlm.iloc[0]["count"]) == 4
@@ -886,7 +886,7 @@ def test_analyze_trace_works_with_profile_only_input(dask_client, tmp_path):
         view_types=["proc_name", "time_range"],
     )
 
-    posix_hlm = result.get_hlm("posix").compute().reset_index()
+    posix_hlm = result.get_hlm("posix").reset_index()
     assert set(posix_hlm["func_name"]) == {"open64"}
     assert int(posix_hlm.iloc[0]["count"]) == 5
 
@@ -941,8 +941,79 @@ def test_custom_profile_time_granularity_from_config(dask_client, tmp_path):
     )
 
     assert result.profile_time_granularity == 10
-    profiles = result.profiles.compute()
+    profiles = result.profiles
     assert len(profiles) == 1
     p = profiles.iloc[0]
     # 10s bucket → time_end - time_start = 10_000_000 us
     assert int(p["time_end"] - p["time_start"]) == 10_000_000
+
+
+# ---------------------------------------------------------------------------
+# Test: profile expansion matches the pandas path
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("distribution", ["uniform", "weighted"])
+@pytest.mark.parametrize("factor", [1, 2, 5, 9])
+def test_expand_profile_buckets_matches_pandas(distribution, factor):
+    """Counts, sizes, times and the sub-bucket grid equal the pandas path (rtol 1e-12, NaN as missing)."""
+    import numpy as np
+    import pandas as pd
+    from dftracer.utils import DataFrame, Series
+
+    from . import pandas_reference
+
+    profiles = DataFrame.from_dict(
+        {
+            "func_name": ["read", "write", "open", "close"],
+            "count": Series([7, 3, None, 12], dtype="int64"),
+            "time": [0.5, 0.0, 1.25, 3.0],
+            "size": Series([1001, None, 0, 4096], dtype="int64"),
+            "time_min": [0.01, None, 0.2, 0.3],
+            "time_max": [0.09, 0.4, None, 0.3],
+            "time_range": Series([1, 2, 3, 4], dtype="int64"),
+            "time_start": Series([5_000_000, 10_000_000, 15_000_000, 20_000_000], dtype="int64"),
+            "time_end": Series([10_000_000, 15_000_000, 20_000_000, 25_000_000], dtype="int64"),
+        }
+    )
+    args = (factor, 1e6, 5.0 / factor, distribution)
+    got = DFTracerAnalyzer._expand_profile_buckets(profiles, *args).to_pandas()
+    expected = pandas_reference.expand_profile_buckets(profiles.to_pandas(nullable=True), *args)
+
+    assert list(got.columns) == list(expected.columns)
+    assert len(got) == len(expected) == 4 * factor
+    for col in expected.columns:
+        g, e = got[col], expected[col]
+        assert g.isna().tolist() == e.isna().tolist(), col
+        if pd.api.types.is_numeric_dtype(e.dtype):
+            assert pd.api.types.is_integer_dtype(g.dtype) == pd.api.types.is_integer_dtype(e.dtype), col
+            np.testing.assert_allclose(
+                g[g.notna()].to_numpy(dtype=float), e[e.notna()].to_numpy(dtype=float), rtol=1e-12, atol=0
+            )
+        else:
+            assert g.tolist() == e.tolist(), col
+
+
+def test_expand_profile_buckets_truncates_negative_sizes_as_pandas():
+    import pandas as pd
+    from dftracer.utils import DataFrame, Series
+
+    from . import pandas_reference
+
+    profiles = DataFrame.from_dict(
+        {
+            "count": Series([3, 1], dtype="int64"),
+            "time": [1.0, 2.0],
+            "size": Series([-3, -1], dtype="int64"),
+            "time_min": [0.1, 0.2],
+            "time_max": [0.1, 0.2],
+            "time_range": Series([0, 1], dtype="int64"),
+            "time_start": Series([0, 5_000_000], dtype="int64"),
+            "time_end": Series([5_000_000, 10_000_000], dtype="int64"),
+        }
+    )
+    args = (2, 1e6, 2.5, "uniform")
+    got = DFTracerAnalyzer._expand_profile_buckets(profiles, *args).to_pandas()
+    expected = pandas_reference.expand_profile_buckets(profiles.to_pandas(nullable=True), *args)
+    assert got["size"].tolist() == expected["size"].astype("int64").tolist() == [-1, -1, 0, 0]
+    assert pd.api.types.is_integer_dtype(got["size"].dtype)

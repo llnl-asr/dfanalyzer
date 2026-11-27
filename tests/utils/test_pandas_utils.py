@@ -1,7 +1,7 @@
 import pandas as pd
 import pytest
 
-from dftracer.analyzer.utils.pandas_utils import to_nullable_numeric
+from tests.pandas_reference import to_nullable_numeric
 
 pytestmark = [pytest.mark.smoke, pytest.mark.full]
 

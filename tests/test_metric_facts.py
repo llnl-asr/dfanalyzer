@@ -1,12 +1,12 @@
 """Tests for the metric-driven (slope-based) fact builder + continuous scoring."""
 import math
 
-import pandas as pd
 import pytest
-
-from dftracer.analyzer.fact_engine import MetricFactBuilder, FactPipeline
+from dftracer.analyzer.fact_engine import FactPipeline, MetricFactBuilder
 from dftracer.analyzer.scoring import normalize_slope
+from dftracer.utils import Series
 
+from .frame_helpers import flat_view
 
 TAN67_5 = math.tan(math.radians(67.5))   # ~2.414 -> severity 0.5
 BIG_SLOPE = 1e9                            # ~90deg -> severity ~1.0
@@ -20,17 +20,16 @@ def test_normalize_slope_is_continuous_0_1():
 
 
 def test_normalize_slope_on_series():
-    s = pd.Series([0.5, 1.0, TAN67_5, BIG_SLOPE], index=["a", "b", "c", "d"])
+    s = Series([0.5, 1.0, TAN67_5, BIG_SLOPE])
     out = normalize_slope(s)
-    assert list(out.round(3)) == [0.0, 0.0, 0.5, 1.0]
+    assert out.round(3).to_list() == [0.0, 0.0, 0.5, 1.0]
 
 
 def _flat_view():
     # index = entities (files); one *_ops_slope column for the reader_posix layer.
     # slope 1.0 (proportional) -> 0; 2.414 -> 0.5; 1e9 -> ~1.0
-    return pd.DataFrame(
-        {"reader_posix_read_ops_slope": [1.0, TAN67_5, BIG_SLOPE]},
-        index=["/d/a.npz", "/d/b.npz", "/d/c.npz"],
+    return flat_view(
+        "file_name", ["/d/a.npz", "/d/b.npz", "/d/c.npz"], reader_posix_read_ops_slope=[1.0, TAN67_5, BIG_SLOPE]
     )
 
 
@@ -72,7 +71,7 @@ def test_metric_builder_detail_facts():
 def test_metric_builder_no_slope_columns_yields_nothing():
     builder = MetricFactBuilder(layers=["reader_posix"])
     facts = builder.evaluate(
-        {("reader_posix", "file_name"): pd.DataFrame({"x": [1, 2]})},
+        {("reader_posix", "file_name"): flat_view("file_name", ["/a", "/b"], x=[1, 2])},
         raw_stats={"run_id": "r1"},
     )
     assert facts == {}
@@ -95,10 +94,7 @@ def test_window_view_emits_per_row_temporal_facts():
     # The window view is the temporal axis: even in aggregate mode it emits ONE
     # fact per window row (never collapsed), with an entity-free scope and the
     # window number stamped as window.window.
-    df = pd.DataFrame(
-        {"reader_posix_read_ops_slope": [BIG_SLOPE, BIG_SLOPE, BIG_SLOPE]},
-        index=[0, 1, 2],
-    )
+    df = flat_view("window", [0, 1, 2], reader_posix_read_ops_slope=[BIG_SLOPE, BIG_SLOPE, BIG_SLOPE])
     builder = MetricFactBuilder(layers=["reader_posix"], default_emit_mode="aggregate")
     facts = builder.evaluate(
         {("reader_posix", "window"): df}, raw_stats={"run_id": "r1"}

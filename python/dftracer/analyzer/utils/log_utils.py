@@ -28,7 +28,7 @@ def current_progress() -> Optional[Callable[..., None]]:
 
 def configure_library_logging(level: str = "warn") -> None:
     """Set the level of the dftracer-utils C++ logger, which writes to stderr."""
-    from dftracer.utils import set_log_level
+    from dftracer.utils.runtime import set_log_level
 
     set_log_level(level)  # type: ignore[arg-type]
 

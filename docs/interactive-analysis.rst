@@ -89,31 +89,42 @@ The results can then be passed to the output handler to display a summary.
 Result Exploration
 ------------------
 
-The ``result`` object (of type ``AnalysisResult``) contains detailed views of the analyzed data, which you can explore using pandas DataFrames. The ``AnalysisResult`` provides convenient methods to access different aspects of the analysis results.
+The ``result`` object (of type ``AnalysisResult``) contains detailed views of the analyzed data as dftracer-utils ``DataFrame`` objects.
+Call ``.to_pandas()`` on a frame to get a pandas DataFrame with the same index and columns.
+The ``AnalysisResult`` provides convenient methods to access different aspects of the analysis results.
 
 AnalysisResult Class
 ~~~~~~~~~~~~~~~~~~~~
 
 The ``AnalysisResult`` dataclass encapsulates all the results from a DFAnalyzer analysis run. It provides both direct attribute access and convenience methods for exploring the data.
 
-**Key Distinction**: Most users should primarily use ``flat_views``, which are always pandas DataFrames. The other views are exposed for advanced use, and may be either pandas or Dask DataFrames: layers small enough to materialise are computed in pandas (see ``analyzer.view_materialize_max_bytes``), and the rest stay on Dask. Code that consumes them should not assume one engine — ``.head()``, ``.columns`` and the like work on both, but ``.compute()`` exists only on Dask.
+**Key Distinction**: Most users should primarily use ``flat_views``.
+The other views are exposed for advanced use.
+Every view is a dftracer-utils ``DataFrame``, also when the layer was computed on the Dask cluster (see ``analyzer.view_materialize_max_bytes``).
+Set columns, such as the files a process touched, are list columns.
 
 Key Attributes:
 
 - ``layers``: List of layer names available in the analysis
 - ``view_types``: List of view types used in the analysis  
-- ``flat_views``: Dictionary of flattened pandas DataFrames for quick access to aggregated metrics (recommended for most users)
-- ``views``: Nested dictionary organized by layer and view type; pandas or Dask DataFrames depending on whether the layer was materialised
+- ``flat_views``: Dictionary of flattened frames for quick access to aggregated metrics (recommended for most users)
+- ``views``: Nested dictionary of frames organized by layer and view type
 - ``raw_stats``: Basic statistics about the trace data
 - ``checkpoint_dir``: Directory where analysis checkpoints are stored
 
 Primary Method (Recommended for most users):
 
-View aggregated metrics across all layers, grouped by time intervals (returns pandas DataFrame):
+View aggregated metrics across all layers, grouped by time intervals:
 
 .. code-block:: python
 
    result.get_flat_view('time_range').head(10)
+
+Get the same view as a pandas DataFrame (needs pandas installed):
+
+.. code-block:: python
+
+   result.get_flat_view('time_range').to_pandas()
 
 List all the layers available for detailed analysis:
 
@@ -121,21 +132,21 @@ List all the layers available for detailed analysis:
 
    result.layers
 
-Advanced Methods (pandas or Dask DataFrames, depending on whether the layer was materialised):
+Advanced Methods:
 
-Show the high-level metrics for a specific layer (returns a pandas or Dask DataFrame):
+Show the high-level metrics for a specific layer:
 
 .. code-block:: python
 
    result.get_hlm('app').head()
 
-Display a layered main view for a specific layer (returns a pandas or Dask DataFrame):
+Display a layered main view for a specific layer:
 
 .. code-block:: python
 
    result.get_main_view('reader_posix_lustre').head()
 
-Access a specific view for a layer, grouped by a particular dimension (returns a pandas or Dask DataFrame):
+Access a specific view for a layer, grouped by a particular dimension:
 
 .. code-block:: python
 
@@ -154,7 +165,7 @@ Filter the events first, and go through all of them page by page when they do no
    for table in result.traces.filter('cat == "POSIX"').pages():
        df = table.to_pandas()
 
-Display the events grouped by category, function, process, file and time bucket (returns a Dask DataFrame):
+Display the events grouped by category, function, process, file and time bucket:
 
 .. code-block:: python
 

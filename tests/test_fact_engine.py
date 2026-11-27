@@ -1,9 +1,8 @@
-import pandas as pd
 import pytest
-
 from dftracer.analyzer.fact_engine import FactEngine
 from dftracer.analyzer.fact_rules import build_fact_rule
 
+from .frame_helpers import flat_view
 
 pytestmark = [pytest.mark.smoke, pytest.mark.full]
 
@@ -42,18 +41,8 @@ def test_fact_engine_emits_detail_and_aggregate_facts():
     )
     engine = FactEngine([detail_rule, aggregate_rule])
     flat_views = {
-        ("epoch",): pd.DataFrame(
-            {
-                "fetch_iter_time_frac_parent": [0.20, 0.55, 0.80],
-            },
-            index=[1, 2, 3],
-        ),
-        ("proc_name",): pd.DataFrame(
-            {
-                "epoch_time_max": [10.0, 2.0, 5.0],
-            },
-            index=["r0", "r1", "r2"],
-        ),
+        ("epoch",): flat_view("epoch", [1, 2, 3], fetch_iter_time_frac_parent=[0.20, 0.55, 0.80]),
+        ("proc_name",): flat_view("proc_name", ["r0", "r1", "r2"], epoch_time_max=[10.0, 2.0, 5.0]),
     }
 
     facts = engine.evaluate(flat_views=flat_views, raw_stats={"run_id": "run-123"})
@@ -92,14 +81,7 @@ def test_fact_engine_skips_rule_with_unresolved_identifier():
         }
     )
     engine = FactEngine([unresolved_rule])
-    flat_views = {
-        ("epoch",): pd.DataFrame(
-            {
-                "epoch_time_max": [1.0, 2.0],
-            },
-            index=[1, 2],
-        )
-    }
+    flat_views = {("epoch",): flat_view("epoch", [1, 2], epoch_time_max=[1.0, 2.0])}
 
     facts = engine.evaluate(flat_views=flat_views, raw_stats={"run_id": "run-123"})
 
@@ -147,18 +129,8 @@ def test_fact_engine_sets_time_range_and_step_window_metadata():
     )
     engine = FactEngine([time_range_rule, step_rule])
     flat_views = {
-        ("time_range",): pd.DataFrame(
-            {
-                "fetch_iter_time_frac_parent": [0.2, 0.7],
-            },
-            index=[0, 1],
-        ),
-        ("step",): pd.DataFrame(
-            {
-                "compute_time_frac_parent": [0.4, 0.65],
-            },
-            index=[3, 4],
-        ),
+        ("time_range",): flat_view("time_range", [0, 1], fetch_iter_time_frac_parent=[0.2, 0.7]),
+        ("step",): flat_view("step", [3, 4], compute_time_frac_parent=[0.4, 0.65]),
     }
 
     facts = engine.evaluate(
@@ -211,13 +183,7 @@ def test_fact_engine_emits_layer_scoped_facts_with_fillna0_support():
     )
     engine = FactEngine([rule])
     flat_views = {
-        ("epoch",): pd.DataFrame(
-            {
-                "reader_posix_read_count_sum": pd.array([10.0], dtype="Float64"),
-                "reader_posix_write_count_sum": pd.array([pd.NA], dtype="Float64"),
-            },
-            index=[3],
-        )
+        ("epoch",): flat_view("epoch", [3], reader_posix_read_count_sum=[10.0], reader_posix_write_count_sum=[None])
     }
 
     facts = engine.evaluate(flat_views=flat_views, raw_stats={"run_id": "run-123"})

@@ -3,7 +3,7 @@
 Metrics Reference
 =================
 
-DFAnalyzer produces flat views — pandas DataFrames where each row represents a group (e.g., a process, a time range, a file) and each column is a metric. This document explains how to read column names, what each metric family measures, and how to use the two-track statistics system for diagnosing parallel I/O issues.
+DFAnalyzer produces flat views, which are dftracer-utils DataFrames where each row represents a group (e.g., a process, a time range, a file) and each column is a metric. This document explains how to read column names, what each metric family measures, and how to use the two-track statistics system for diagnosing parallel I/O issues.
 
 .. contents::
    :local:

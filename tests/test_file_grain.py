@@ -19,12 +19,12 @@ pytestmark = [pytest.mark.smoke, pytest.mark.full]
 HHASH = "abc123def456"
 PID = TID = 2000
 
-# Two files the analysis keeps, two matching IGNORED_FILE_PATTERNS.
+# Two files the analysis keeps, two matching TraceRules.ignored_file_patterns.
 KEPT_FILES = ["/scratch/input/a.bin", "/scratch/input/b.bin"]
 IGNORED_FILES = ["/usr/lib/python3.12/site.py", "/proc/self/stat"]
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture
 def dask_cluster():
     cluster = LocalCluster(processes=False, protocol="tcp", worker_class="distributed.nanny.Nanny")
     yield cluster
@@ -97,7 +97,7 @@ def _analyze(trace_path, tmp_path, dask_cluster, view_types="[time_range]"):
 def test_ignored_files_are_dropped_from_the_analysis(
     mixed_file_trace: str, tmp_path: pathlib.Path, dask_cluster: LocalCluster
 ) -> None:
-    """IGNORED_FILE_PATTERNS must still drop rows once the read folds files
+    """TraceRules.ignored_file_patterns must still drop rows once the read folds files
     into buckets: the fold sees the full path, so it can still match."""
     dfa, result = _analyze(mixed_file_trace, tmp_path, dask_cluster)
 
@@ -118,7 +118,7 @@ def test_unique_file_count_excludes_ignored_files(
     mixed_file_trace: str, tmp_path: pathlib.Path, dask_cluster: LocalCluster
 ) -> None:
     """The distinct-file count reports files the analysis actually used, so it
-    must not include files dropped by IGNORED_FILE_PATTERNS."""
+    must not include files dropped by TraceRules.ignored_file_patterns."""
     dfa, result = _analyze(mixed_file_trace, tmp_path, dask_cluster)
 
     assert int(result.raw_stats.unique_file_count) == len(KEPT_FILES)

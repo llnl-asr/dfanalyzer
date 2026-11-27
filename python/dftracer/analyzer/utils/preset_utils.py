@@ -1,10 +1,9 @@
-import glob
-import os
 from collections.abc import Iterable
 
 import structlog
-from dftracer.utils import TraceViewer
-from dftracer.utils.dfanalyzer import index_path_for, resolve_trace_inputs
+from dftracer.utils.trace import TraceViewer
+
+from ..trace_index import TraceIndex
 
 logger = structlog.get_logger()
 
@@ -28,19 +27,13 @@ def classify_categories(categories: Iterable[str]) -> str:
     return "auto"
 
 
-def list_trace_files(trace_path: str, trace_groups: list[str] | None = None) -> list[str]:
-    directory, files = resolve_trace_inputs(trace_path, trace_groups)
-    if files is not None:
-        return list(files)
-    return sorted(glob.glob(os.path.join(directory, "*.pfw")) + glob.glob(os.path.join(directory, "*.pfw.gz")))
-
-
 def detect_preset(trace_path: str, trace_groups: list[str] | None = None) -> str:
-    files = list_trace_files(trace_path, trace_groups)
+    index = TraceIndex.resolve(trace_path, trace_groups)
+    files = index.trace_files()
     if not files:
-        raise FileNotFoundError("No matching .pfw or .pfw.gz files found.")
-    viewer = TraceViewer(files, index_path=index_path_for(trace_path))
-    categories = viewer.unique("cat").collect().to_pandas()["cat"].dropna().astype(str)
+        raise FileNotFoundError("No matching .pfw.gz files found.")
+    viewer = TraceViewer(files, index_dir=index.index_dir)
+    categories = [str(c) for c in viewer.unique("cat").collect()["cat"].dropna().to_list()]
     name = classify_categories(categories)
     logger.info("Detected analyzer preset", preset=name, categories=sorted(set(categories)))
     return name

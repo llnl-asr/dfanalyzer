@@ -112,7 +112,7 @@ Common Analyzer Parameters
    * - ``analyzer.view_materialize_max_bytes``
      - int
      - 268435456
-     - Layers whose main view is smaller than this are computed in pandas rather than Dask, which avoids building a task graph for frames that are often only a few dozen rows. Output is identical either way, so a wrong value costs speed, never correctness. Set to ``0`` to keep everything on Dask.
+     - Layers whose main view is smaller than this are computed in this process rather than on Dask, which avoids building a task graph for frames that are often only a few dozen rows. Output is identical either way, so a wrong value costs speed, never correctness. Set to ``0`` to keep everything on Dask.
 
 Analyzer Presets (``analyzer/preset``)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -274,7 +274,7 @@ is ever built, which avoids roughly 2.2 seconds of setup and teardown. Over it,
 the scan is discarded, a ``LocalCluster`` is started, and the read is redone
 across its workers. Results are identical either way.
 
-The budget is compared against the *aggregated* Arrow data, not the size of the
+The budget is compared against the *aggregated* frames (columns and index), not the size of the
 traces on disk. The C++ indexer aggregates before Python sees anything, and how
 far it collapses the trace depends on time buckets, processes and categories
 rather than bytes — across the bundled fixtures the ratio between the two varies
@@ -291,7 +291,7 @@ about twentyfold, so no threshold on file size predicts it.
    * - ``cluster.max_bytes``
      - int
      - 268435456
-     - Aggregated Arrow bytes that may be analysed in process. Above this, a local cluster is started.
+     - Bytes of the aggregated frames that may be analysed in process. Above this, a local cluster is started.
    * - ``cluster.n_workers``
      - int
      - null
@@ -339,7 +339,7 @@ In-Process (``cluster=none``)
 Runs the analysis in the calling process, with no scheduler and no workers,
 unconditionally — unlike ``cluster=auto``, it never falls back to a cluster.
 
-Layers small enough to materialise are already computed in pandas rather than
+Layers small enough to materialise are already computed in this process rather than on
 Dask (see ``analyzer.view_materialize_max_bytes``), so for a small trace the
 cluster is mostly orchestration. On the ``dftracer-ai`` fixture, cluster setup
 and teardown alone account for roughly 2.2 seconds of a 14.4 second run.
